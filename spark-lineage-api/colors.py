@@ -1,0 +1,5 @@
+red = "#E65742"
+orange = "#FE9C22"
+yellow = "#F8DD3D"
+teal = "#71EAB9"
+blue = "#1F63A9"

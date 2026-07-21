@@ -1,0 +1,48 @@
+SELECT asceding.rnk,
+       i1.i_product_name best_performing,
+       i2.i_product_name worst_performing
+FROM
+  (SELECT *
+   FROM
+     (SELECT item_sk,
+             rank() OVER (
+                          ORDER BY rank_col ASC) rnk
+      FROM
+        (SELECT ss1.ss_item_sk item_sk,
+                avg(ss1.ss_net_profit) rank_col
+         FROM dfs.`tmp/store_sales.parquet` ss1
+         WHERE ss1.ss_store_sk = 4
+         GROUP BY ss1.ss_item_sk
+         HAVING avg(ss1.ss_net_profit) > 0.9*
+           (SELECT avg(store_sales.ss_net_profit) rank_col
+            FROM dfs.`tmp/store_sales.parquet` AS store_sales
+            WHERE store_sales.ss_store_sk = 4
+              AND store_sales.ss_addr_sk IS NULL
+            GROUP BY store_sales.ss_store_sk))V1)V11
+   WHERE rnk < 11) asceding,
+  (SELECT *
+   FROM
+     (SELECT item_sk,
+             rank() OVER (
+                          ORDER BY rank_col DESC) rnk
+      FROM
+        (SELECT ss1.ss_item_sk item_sk,
+                avg(ss1.ss_net_profit) rank_col
+         FROM dfs.`tmp/store_sales.parquet` ss1
+         WHERE ss1.ss_store_sk = 4
+         GROUP BY ss1.ss_item_sk
+         HAVING avg(ss1.ss_net_profit) > 0.9*
+           (SELECT avg(store_sales.ss_net_profit) rank_col
+            FROM dfs.`tmp/store_sales.parquet` AS store_sales
+            WHERE store_sales.ss_store_sk = 4
+              AND store_sales.ss_addr_sk IS NULL
+            GROUP BY store_sales.ss_store_sk))V2)V21
+   WHERE rnk < 11) descending,
+     dfs.`tmp/item.parquet` i1,
+     dfs.`tmp/item.parquet` i2
+WHERE asceding.rnk = descending.rnk
+  AND i1.i_item_sk=asceding.item_sk
+  AND i2.i_item_sk=descending.item_sk
+ORDER BY asceding.rnk
+LIMIT 100;
+
