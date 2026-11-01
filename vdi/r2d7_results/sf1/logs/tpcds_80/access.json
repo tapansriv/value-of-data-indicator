@@ -1,0 +1,68 @@
+[
+    {
+        "query": "tpcds query 80 (spark row-group capture)",
+        "query_text": "-- start query 80 in stream 0 using template query80.tpl \nWITH ssr AS \n( \n                SELECT          s_store_id                                    AS store_id, \n                                Sum(ss_ext_sales_price)                       AS sales, \n                                Sum(COALESCE(sr_return_amt, 0))               AS returns1, \n                                Sum(ss_net_profit - COALESCE(sr_net_loss, 0)) AS profit \n                FROM            store_sales \n                LEFT OUTER JOIN store_returns \n                ON              ( \n                                                ss_item_sk = sr_item_sk \n                                AND             ss_ticket_number = sr_ticket_number), \n                                date_dim, \n                                store, \n                                item, \n                                promotion \n                WHERE           ss_sold_date_sk = d_date_sk \n                AND             d_date BETWEEN Cast('2000-08-26' AS DATE) AND             ( \n                                                Cast('2000-08-26' AS DATE) + INTERVAL '30' day) \n                AND             ss_store_sk = s_store_sk \n                AND             ss_item_sk = i_item_sk \n                AND             i_current_price > 50 \n                AND             ss_promo_sk = p_promo_sk \n                AND             p_channel_tv = 'N' \n                GROUP BY        s_store_id) , csr AS \n( \n                SELECT          cp_catalog_page_id                            AS catalog_page_id, \n                                sum(cs_ext_sales_price)                       AS sales, \n                                sum(COALESCE(cr_return_amount, 0))            AS returns1, \n                                sum(cs_net_profit - COALESCE(cr_net_loss, 0)) AS profit \n                FROM            catalog_sales \n                LEFT OUTER JOIN catalog_returns \n                ON              ( \n                                                cs_item_sk = cr_item_sk \n                                AND             cs_order_number = cr_order_number), \n                                date_dim, \n                                catalog_page, \n                                item, \n                                promotion \n                WHERE           cs_sold_date_sk = d_date_sk \n                AND             d_date BETWEEN cast('2000-08-26' AS date) AND             ( \n                                                cast('2000-08-26' AS date) + INTERVAL '30' day) \n                AND             cs_catalog_page_sk = cp_catalog_page_sk \n                AND             cs_item_sk = i_item_sk \n                AND             i_current_price > 50 \n                AND             cs_promo_sk = p_promo_sk \n                AND             p_channel_tv = 'N' \n                GROUP BY        cp_catalog_page_id) , wsr AS \n( \n                SELECT          web_site_id, \n                                sum(ws_ext_sales_price)                       AS sales, \n                                sum(COALESCE(wr_return_amt, 0))               AS returns1, \n                                sum(ws_net_profit - COALESCE(wr_net_loss, 0)) AS profit \n                FROM            web_sales \n                LEFT OUTER JOIN web_returns \n                ON              ( \n                                                ws_item_sk = wr_item_sk \n                                AND             ws_order_number = wr_order_number), \n                                date_dim, \n                                web_site, \n                                item, \n                                promotion \n                WHERE           ws_sold_date_sk = d_date_sk \n                AND             d_date BETWEEN cast('2000-08-26' AS date) AND             ( \n                                                cast('2000-08-26' AS date) + INTERVAL '30' day) \n                AND             ws_web_site_sk = web_site_sk \n                AND             ws_item_sk = i_item_sk \n                AND             i_current_price > 50 \n                AND             ws_promo_sk = p_promo_sk \n                AND             p_channel_tv = 'N' \n                GROUP BY        web_site_id) \nSELECT\n         channel , \n         id , \n         sum(sales)   AS sales , \n         sum(returns1) AS returns1 , \n         sum(profit)  AS profit \nFROM     ( \n                SELECT 'store channel' AS channel , \n                       'store' \n                              || store_id AS id , \n                       sales , \n                       returns1 , \n                       profit \n                FROM   ssr \n                UNION ALL \n                SELECT 'catalog channel' AS channel , \n                       'catalog_page' \n                              || catalog_page_id AS id , \n                       sales , \n                       returns1 , \n                       profit \n                FROM   csr \n                UNION ALL \n                SELECT 'web channel' AS channel , \n                       'web_site' \n                              || web_site_id AS id , \n                       sales , \n                       returns1 , \n                       profit \n                FROM   wsr ) x \nGROUP BY rollup (channel, id) \nORDER BY channel , \n         id \nLIMIT 100; \n\n",
+        "data_elements": [
+            {
+                "file": "catalog_page",
+                "row_group": "0",
+                "num_records": "11718"
+            },
+            {
+                "file": "catalog_returns",
+                "row_group": "0",
+                "num_records": "144067"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "0",
+                "num_records": "1441548"
+            },
+            {
+                "file": "date_dim",
+                "row_group": "0",
+                "num_records": "73049"
+            },
+            {
+                "file": "item",
+                "row_group": "0",
+                "num_records": "18000"
+            },
+            {
+                "file": "promotion",
+                "row_group": "0",
+                "num_records": "300"
+            },
+            {
+                "file": "store",
+                "row_group": "0",
+                "num_records": "12"
+            },
+            {
+                "file": "store_returns",
+                "row_group": "0",
+                "num_records": "287514"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "0",
+                "num_records": "2880404"
+            },
+            {
+                "file": "web_returns",
+                "row_group": "0",
+                "num_records": "71763"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "0",
+                "num_records": "719384"
+            },
+            {
+                "file": "web_site",
+                "row_group": "0",
+                "num_records": "30"
+            }
+        ]
+    }
+]

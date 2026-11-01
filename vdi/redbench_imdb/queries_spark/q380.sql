@@ -1,0 +1,28 @@
+SELECT
+  COUNT(*)
+FROM name AS n, aka_name AS an, info_type AS it1, person_info AS pi1, cast_info AS ci, role_type AS rt
+WHERE
+  n.id = ci.person_id
+  AND ci.person_id = pi1.person_id
+  AND it1.id = pi1.info_type_id
+  AND n.id = pi1.person_id
+  AND n.id = an.person_id
+  AND ci.person_id = an.person_id
+  AND an.person_id = pi1.person_id
+  AND rt.id = ci.role_id
+  AND (
+    n.gender IN ('f')
+  )
+  AND (
+    n.name_pcode_nf IN ('A4253', 'B4541', 'D4236', 'G2635', 'H652', 'J46', 'M6263', 'M6562', 'R262', 'S1526', 'T3545', 'T6313', 'V6513', 'Z2562', 'Z6451')
+  )
+  AND (
+    ci.note IN ('(credit only)', '(executive assistant)', '(executive producer: Syco TV)', '(production assistant) (as Ria Theresa May Garcia)', '(voice)')
+    OR ci.note IS NULL
+  )
+  AND (
+    rt.role IN ('actress', 'editor', 'miscellaneous crew', 'producer')
+  )
+  AND (
+    it1.id IN ('19')
+  )

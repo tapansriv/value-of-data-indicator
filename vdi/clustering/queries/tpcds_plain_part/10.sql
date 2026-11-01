@@ -16,13 +16,7 @@ SELECT
 FROM READ_PARQUET('/home/cc/tpcds_cluster_base/customer/*.parquet') AS c, READ_PARQUET('/home/cc/tpcds_cluster_base/customer_address/*.parquet') AS ca, READ_PARQUET('/home/cc/tpcds_cluster_base/customer_demographics/*.parquet') AS customer_demographics
 WHERE
   c.c_current_addr_sk = ca.ca_address_sk
-  AND ca_county IN (
-    'Rush County',
-    'Toole County',
-    'Jefferson County',
-    'Dona Ana County',
-    'La Porte County'
-  )
+  AND ca_county IN ('Rush County', 'Toole County', 'Jefferson County', 'Dona Ana County', 'La Porte County')
   AND cd_demo_sk = c.c_current_cdemo_sk
   AND EXISTS(
       SELECT

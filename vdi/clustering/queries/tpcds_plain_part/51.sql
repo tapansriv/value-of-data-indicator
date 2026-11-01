@@ -2,11 +2,7 @@ WITH web_v1 AS (
     SELECT
       ws_item_sk AS item_sk,
       d_date,
-      SUM(SUM(ws_sales_price)) OVER (
-        PARTITION BY ws_item_sk
-        ORDER BY d_date
-        ROWS BETWEEN UNBOUNDED preceding AND CURRENT ROW
-      ) AS cume_sales
+      SUM(SUM(ws_sales_price)) OVER (PARTITION BY ws_item_sk ORDER BY d_date ROWS BETWEEN UNBOUNDED preceding AND CURRENT ROW) AS cume_sales
     FROM READ_PARQUET('/home/cc/tpcds_cluster_base/web_sales/*.parquet') AS web_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS date_dim
     WHERE
       ws_sold_date_sk = d_date_sk
@@ -19,11 +15,7 @@ WITH web_v1 AS (
     SELECT
       ss_item_sk AS item_sk,
       d_date,
-      SUM(SUM(ss_sales_price)) OVER (
-        PARTITION BY ss_item_sk
-        ORDER BY d_date
-        ROWS BETWEEN UNBOUNDED preceding AND CURRENT ROW
-      ) AS cume_sales
+      SUM(SUM(ss_sales_price)) OVER (PARTITION BY ss_item_sk ORDER BY d_date ROWS BETWEEN UNBOUNDED preceding AND CURRENT ROW) AS cume_sales
     FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS date_dim
     WHERE
       ss_sold_date_sk = d_date_sk
@@ -41,16 +33,8 @@ FROM (
       d_date,
       web_sales,
       store_sales,
-      MAX(web_sales) OVER (
-        PARTITION BY item_sk
-        ORDER BY d_date
-        ROWS BETWEEN UNBOUNDED preceding AND CURRENT ROW
-      ) AS web_cumulative,
-      MAX(store_sales) OVER (
-        PARTITION BY item_sk
-        ORDER BY d_date
-        ROWS BETWEEN UNBOUNDED preceding AND CURRENT ROW
-      ) AS store_cumulative
+      MAX(web_sales) OVER (PARTITION BY item_sk ORDER BY d_date ROWS BETWEEN UNBOUNDED preceding AND CURRENT ROW) AS web_cumulative,
+      MAX(store_sales) OVER (PARTITION BY item_sk ORDER BY d_date ROWS BETWEEN UNBOUNDED preceding AND CURRENT ROW) AS store_cumulative
     FROM (
         SELECT
           CASE WHEN NOT web.item_sk IS NULL THEN web.item_sk ELSE store.item_sk END AS item_sk,

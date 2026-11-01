@@ -15,7 +15,7 @@ FROM (
       SUM(ss_ext_sales_price) AS extended_price,
       SUM(ss_ext_list_price) AS list_price,
       SUM(ss_ext_tax) AS extended_tax
-    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS date_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store, READ_PARQUET('/home/cc/tpcds_cluster_rand/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/customer_address/*.parquet') AS customer_address
+    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS date_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store, READ_PARQUET('/home/cc/tpcds_cluster_base/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/customer_address/*.parquet') AS customer_address
     WHERE
       store_sales.ss_sold_date_sk = date_dim.d_date_sk
       AND store_sales.ss_store_sk = store.s_store_sk

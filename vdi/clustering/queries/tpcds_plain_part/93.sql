@@ -16,7 +16,7 @@ FROM (
         )
       END AS act_sales
     FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales
-    LEFT OUTER JOIN READ_PARQUET('/home/cc/tpcds_cluster_rand/store_returns/*.parquet') AS store_returns
+    LEFT OUTER JOIN READ_PARQUET('/home/cc/tpcds_cluster_base/store_returns/*.parquet') AS store_returns
       ON (
         sr_item_sk = ss_item_sk AND sr_ticket_number = ss_ticket_number
       ), READ_PARQUET('/home/cc/tpcds_cluster_base/reason/*.parquet') AS reason

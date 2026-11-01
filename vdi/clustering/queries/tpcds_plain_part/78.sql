@@ -45,7 +45,7 @@ WITH ws AS (
       SUM(ss_wholesale_cost) AS ss_wc,
       SUM(ss_sales_price) AS ss_sp
     FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales
-    LEFT JOIN READ_PARQUET('/home/cc/tpcds_cluster_rand/store_returns/*.parquet') AS store_returns
+    LEFT JOIN READ_PARQUET('/home/cc/tpcds_cluster_base/store_returns/*.parquet') AS store_returns
       ON sr_ticket_number = ss_ticket_number AND ss_item_sk = sr_item_sk
     JOIN READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS date_dim
       ON ss_sold_date_sk = d_date_sk

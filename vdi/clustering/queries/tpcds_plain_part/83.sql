@@ -2,7 +2,7 @@ WITH sr_items AS (
     SELECT
       i_item_id AS item_id,
       SUM(sr_return_quantity) AS sr_item_qty
-    FROM READ_PARQUET('/home/cc/tpcds_cluster_rand/store_returns/*.parquet') AS store_returns, READ_PARQUET('/home/cc/tpcds_cluster_base/item/*.parquet') AS item, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS date_dim
+    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_returns/*.parquet') AS store_returns, READ_PARQUET('/home/cc/tpcds_cluster_base/item/*.parquet') AS item, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS date_dim
     WHERE
       sr_item_sk = i_item_sk
       AND d_date IN (

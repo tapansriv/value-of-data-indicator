@@ -22,7 +22,7 @@ WITH ssr AS (
           CAST(0 AS DECIMAL(7, 2)) AS profit,
           sr_return_amt AS return_amt,
           sr_net_loss AS net_loss
-        FROM READ_PARQUET('/home/cc/tpcds_cluster_rand/store_returns/*.parquet') AS store_returns
+        FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_returns/*.parquet') AS store_returns
     ) AS salesreturns, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS date_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store
     WHERE
       date_sk = d_date_sk

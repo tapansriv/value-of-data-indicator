@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Refuse commits that add AWS credentials, private keys, or this account's identifiers.
+#
+# Install once per clone (covers every worktree, since they share one hooks dir):
+#   spark-lineage-api/aws/git-hooks/install.sh
+# Bypass a false positive deliberately with `git commit --no-verify`.
+set -uo pipefail
+
+added="$(git diff --cached -U0 --no-color --diff-filter=ACMR | grep '^+' | grep -v '^+++ ')"
+[ -z "$added" ] && exit 0
+
+fail=0
+report() {
+    echo "pre-commit: $1" >&2
+    git diff --cached -U0 --no-color --diff-filter=ACMR -G"$2" --name-only | sed 's/^/    /' >&2
+    fail=1
+}
+
+# Generic patterns, independent of any local config
+# Access key IDs: long-lived (AKIA) and temporary (ASIA)
+echo "$added" | grep -qE '(AKIA|ASIA)[0-9A-Z]{16}' &&
+    report "AWS access key ID" '(AKIA|ASIA)[0-9A-Z]{16}'
+# A secret-key or session-token field *with a value*: secret keys are 40 base64 chars,
+# session tokens longer. Merely naming the field (as the docs do) is fine.
+secret_re='aws_(secret_access_key|session_token)["'"'"']?[[:space:]]*[=:][[:space:]]*["'"'"']?[A-Za-z0-9/+=]{40,}'
+echo "$added" | grep -qiE "$secret_re" &&
+    report "AWS secret key or session token value" "$secret_re"
+echo "$added" | grep -qE -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' &&
+    report "private key" 'BEGIN [A-Z ]*PRIVATE KEY'
+# An account ID inside an ARN, other than AWS's documentation placeholder
+arn_ids="$(echo "$added" | grep -oE 'arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:[0-9]{12}' | grep -v ':123456789012$')"
+[ -n "$arn_ids" ] && report "ARN with a real account ID" 'arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:[0-9]{12}'
+
+# This account's own identifiers, read from the config outside the repo
+env_file="${VDI_ENV_FILE:-$HOME/.config/vdi-spark/env}"
+if [ -r "$env_file" ]; then
+    guarded="$(set -a; . "$env_file" >/dev/null 2>&1
+               printf '%s\n' "${VDI_AWS_ACCOUNT_ID:-}" "${VDI_AWS_ORG_ID:-}" "${VDI_VPC_ID:-}")"
+    while IFS= read -r val; do
+        case "$val" in ""|123456789012|o-xxxxxxxxxx|vpc-xxxxxxxx) continue ;; esac
+        echo "$added" | grep -qF -- "$val" && report "identifier from $env_file ($val)" "$val"
+    done <<< "$guarded"
+else
+    echo "pre-commit: warning: $env_file not found, so this account's IDs are not checked" >&2
+fi
+
+if [ "$fail" -ne 0 ]; then
+    echo "pre-commit: commit refused. Move the value into $env_file (see spark-lineage-api/aws/SECRETS.md)." >&2
+    exit 1
+fi
+exit 0

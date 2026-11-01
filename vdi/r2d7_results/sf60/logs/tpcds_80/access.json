@@ -1,0 +1,743 @@
+[
+    {
+        "query": "tpcds query 80 (spark row-group capture)",
+        "query_text": "-- start query 80 in stream 0 using template query80.tpl \nWITH ssr AS \n( \n                SELECT          s_store_id                                    AS store_id, \n                                Sum(ss_ext_sales_price)                       AS sales, \n                                Sum(COALESCE(sr_return_amt, 0))               AS returns1, \n                                Sum(ss_net_profit - COALESCE(sr_net_loss, 0)) AS profit \n                FROM            store_sales \n                LEFT OUTER JOIN store_returns \n                ON              ( \n                                                ss_item_sk = sr_item_sk \n                                AND             ss_ticket_number = sr_ticket_number), \n                                date_dim, \n                                store, \n                                item, \n                                promotion \n                WHERE           ss_sold_date_sk = d_date_sk \n                AND             d_date BETWEEN Cast('2000-08-26' AS DATE) AND             ( \n                                                Cast('2000-08-26' AS DATE) + INTERVAL '30' day) \n                AND             ss_store_sk = s_store_sk \n                AND             ss_item_sk = i_item_sk \n                AND             i_current_price > 50 \n                AND             ss_promo_sk = p_promo_sk \n                AND             p_channel_tv = 'N' \n                GROUP BY        s_store_id) , csr AS \n( \n                SELECT          cp_catalog_page_id                            AS catalog_page_id, \n                                sum(cs_ext_sales_price)                       AS sales, \n                                sum(COALESCE(cr_return_amount, 0))            AS returns1, \n                                sum(cs_net_profit - COALESCE(cr_net_loss, 0)) AS profit \n                FROM            catalog_sales \n                LEFT OUTER JOIN catalog_returns \n                ON              ( \n                                                cs_item_sk = cr_item_sk \n                                AND             cs_order_number = cr_order_number), \n                                date_dim, \n                                catalog_page, \n                                item, \n                                promotion \n                WHERE           cs_sold_date_sk = d_date_sk \n                AND             d_date BETWEEN cast('2000-08-26' AS date) AND             ( \n                                                cast('2000-08-26' AS date) + INTERVAL '30' day) \n                AND             cs_catalog_page_sk = cp_catalog_page_sk \n                AND             cs_item_sk = i_item_sk \n                AND             i_current_price > 50 \n                AND             cs_promo_sk = p_promo_sk \n                AND             p_channel_tv = 'N' \n                GROUP BY        cp_catalog_page_id) , wsr AS \n( \n                SELECT          web_site_id, \n                                sum(ws_ext_sales_price)                       AS sales, \n                                sum(COALESCE(wr_return_amt, 0))               AS returns1, \n                                sum(ws_net_profit - COALESCE(wr_net_loss, 0)) AS profit \n                FROM            web_sales \n                LEFT OUTER JOIN web_returns \n                ON              ( \n                                                ws_item_sk = wr_item_sk \n                                AND             ws_order_number = wr_order_number), \n                                date_dim, \n                                web_site, \n                                item, \n                                promotion \n                WHERE           ws_sold_date_sk = d_date_sk \n                AND             d_date BETWEEN cast('2000-08-26' AS date) AND             ( \n                                                cast('2000-08-26' AS date) + INTERVAL '30' day) \n                AND             ws_web_site_sk = web_site_sk \n                AND             ws_item_sk = i_item_sk \n                AND             i_current_price > 50 \n                AND             ws_promo_sk = p_promo_sk \n                AND             p_channel_tv = 'N' \n                GROUP BY        web_site_id) \nSELECT\n         channel , \n         id , \n         sum(sales)   AS sales , \n         sum(returns1) AS returns1 , \n         sum(profit)  AS profit \nFROM     ( \n                SELECT 'store channel' AS channel , \n                       'store' \n                              || store_id AS id , \n                       sales , \n                       returns1 , \n                       profit \n                FROM   ssr \n                UNION ALL \n                SELECT 'catalog channel' AS channel , \n                       'catalog_page' \n                              || catalog_page_id AS id , \n                       sales , \n                       returns1 , \n                       profit \n                FROM   csr \n                UNION ALL \n                SELECT 'web channel' AS channel , \n                       'web_site' \n                              || web_site_id AS id , \n                       sales , \n                       returns1 , \n                       profit \n                FROM   wsr ) x \nGROUP BY rollup (channel, id) \nORDER BY channel , \n         id \nLIMIT 100; \n\n",
+        "data_elements": [
+            {
+                "file": "catalog_page",
+                "row_group": "0",
+                "num_records": "11718"
+            },
+            {
+                "file": "catalog_returns",
+                "row_group": "0",
+                "num_records": "1850100"
+            },
+            {
+                "file": "catalog_returns",
+                "row_group": "1",
+                "num_records": "1850100"
+            },
+            {
+                "file": "catalog_returns",
+                "row_group": "2",
+                "num_records": "1850100"
+            },
+            {
+                "file": "catalog_returns",
+                "row_group": "3",
+                "num_records": "1850100"
+            },
+            {
+                "file": "catalog_returns",
+                "row_group": "4",
+                "num_records": "1239670"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "0",
+                "num_records": "1913748"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "1",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "2",
+                "num_records": "1908748"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "3",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "4",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "5",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "6",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "7",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "8",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "9",
+                "num_records": "1908748"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "10",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "11",
+                "num_records": "1908748"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "12",
+                "num_records": "1910100"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "13",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "14",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "15",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "16",
+                "num_records": "1910100"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "17",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "18",
+                "num_records": "1908748"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "19",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "20",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "21",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "22",
+                "num_records": "1910100"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "23",
+                "num_records": "1880100"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "24",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "25",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "26",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "27",
+                "num_records": "1880100"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "28",
+                "num_records": "1910100"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "29",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "30",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "31",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "32",
+                "num_records": "1908748"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "33",
+                "num_records": "1910100"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "34",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "35",
+                "num_records": "1913748"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "36",
+                "num_records": "1880100"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "37",
+                "num_records": "1910100"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "38",
+                "num_records": "1908748"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "39",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "40",
+                "num_records": "1910100"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "41",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "42",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "43",
+                "num_records": "1885245"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "44",
+                "num_records": "1910100"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "45",
+                "num_records": "1184320"
+            },
+            {
+                "file": "date_dim",
+                "row_group": "0",
+                "num_records": "73049"
+            },
+            {
+                "file": "item",
+                "row_group": "0",
+                "num_records": "74000"
+            },
+            {
+                "file": "promotion",
+                "row_group": "0",
+                "num_records": "577"
+            },
+            {
+                "file": "store",
+                "row_group": "0",
+                "num_records": "178"
+            },
+            {
+                "file": "store_returns",
+                "row_group": "0",
+                "num_records": "2290100"
+            },
+            {
+                "file": "store_returns",
+                "row_group": "1",
+                "num_records": "2290100"
+            },
+            {
+                "file": "store_returns",
+                "row_group": "2",
+                "num_records": "2290100"
+            },
+            {
+                "file": "store_returns",
+                "row_group": "3",
+                "num_records": "2290100"
+            },
+            {
+                "file": "store_returns",
+                "row_group": "4",
+                "num_records": "2290100"
+            },
+            {
+                "file": "store_returns",
+                "row_group": "5",
+                "num_records": "2290100"
+            },
+            {
+                "file": "store_returns",
+                "row_group": "6",
+                "num_records": "2290100"
+            },
+            {
+                "file": "store_returns",
+                "row_group": "7",
+                "num_records": "1240732"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "0",
+                "num_records": "3010100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "1",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "2",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "3",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "4",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "5",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "6",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "7",
+                "num_records": "3010100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "8",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "9",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "10",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "11",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "12",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "13",
+                "num_records": "3010100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "14",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "15",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "16",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "17",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "18",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "19",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "20",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "21",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "22",
+                "num_records": "3010100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "23",
+                "num_records": "3010100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "24",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "25",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "26",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "27",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "28",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "29",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "30",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "31",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "32",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "33",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "34",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "35",
+                "num_records": "3010100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "36",
+                "num_records": "3010100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "37",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "38",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "39",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "40",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "41",
+                "num_records": "3010100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "42",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "43",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "44",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "45",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "46",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "47",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "48",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "49",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "50",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "51",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "52",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "53",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "54",
+                "num_records": "3010100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "55",
+                "num_records": "3030100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "56",
+                "num_records": "3010100"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "57",
+                "num_records": "285011"
+            },
+            {
+                "file": "web_returns",
+                "row_group": "0",
+                "num_records": "1850100"
+            },
+            {
+                "file": "web_returns",
+                "row_group": "1",
+                "num_records": "1850100"
+            },
+            {
+                "file": "web_returns",
+                "row_group": "2",
+                "num_records": "619340"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "0",
+                "num_records": "2088626"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "1",
+                "num_records": "2088626"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "2",
+                "num_records": "2088626"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "3",
+                "num_records": "2031851"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "4",
+                "num_records": "2031851"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "5",
+                "num_records": "2031851"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "6",
+                "num_records": "2031851"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "7",
+                "num_records": "2088626"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "8",
+                "num_records": "2031851"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "9",
+                "num_records": "2088626"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "10",
+                "num_records": "2088626"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "11",
+                "num_records": "2088626"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "12",
+                "num_records": "2088626"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "13",
+                "num_records": "2088626"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "14",
+                "num_records": "2088626"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "15",
+                "num_records": "2088626"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "16",
+                "num_records": "2088626"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "17",
+                "num_records": "2031851"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "18",
+                "num_records": "2088626"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "19",
+                "num_records": "2031851"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "20",
+                "num_records": "1823702"
+            },
+            {
+                "file": "web_site",
+                "row_group": "0",
+                "num_records": "20"
+            }
+        ]
+    }
+]

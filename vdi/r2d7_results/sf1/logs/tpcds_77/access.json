@@ -1,0 +1,53 @@
+[
+    {
+        "query": "tpcds query 77 (spark row-group capture)",
+        "query_text": "\n-- start query 77 in stream 0 using template query77.tpl \nWITH ss AS \n( \n         SELECT   s_store_sk, \n                  Sum(ss_ext_sales_price) AS sales, \n                  Sum(ss_net_profit)      AS profit \n         FROM     store_sales, \n                  date_dim, \n                  store \n         WHERE    ss_sold_date_sk = d_date_sk \n         AND      d_date BETWEEN Cast('2001-08-16' AS DATE) AND      ( \n                           Cast('2001-08-16' AS DATE) + INTERVAL '30' day) \n         AND      ss_store_sk = s_store_sk \n         GROUP BY s_store_sk) , sr AS \n( \n         SELECT   s_store_sk, \n                  sum(sr_return_amt) AS returns1, \n                  sum(sr_net_loss)   AS profit_loss \n         FROM     store_returns, \n                  date_dim, \n                  store \n         WHERE    sr_returned_date_sk = d_date_sk \n         AND      d_date BETWEEN cast('2001-08-16' AS date) AND      ( \n                           cast('2001-08-16' AS date) + INTERVAL '30' day) \n         AND      sr_store_sk = s_store_sk \n         GROUP BY s_store_sk), cs AS \n( \n         SELECT   cs_call_center_sk, \n                  sum(cs_ext_sales_price) AS sales, \n                  sum(cs_net_profit)      AS profit \n         FROM     catalog_sales, \n                  date_dim \n         WHERE    cs_sold_date_sk = d_date_sk \n         AND      d_date BETWEEN cast('2001-08-16' AS date) AND      ( \n                           cast('2001-08-16' AS date) + INTERVAL '30' day) \n         GROUP BY cs_call_center_sk ), cr AS \n( \n         SELECT   cr_call_center_sk, \n                  sum(cr_return_amount) AS returns1, \n                  sum(cr_net_loss)      AS profit_loss \n         FROM     catalog_returns, \n                  date_dim \n         WHERE    cr_returned_date_sk = d_date_sk \n         AND      d_date BETWEEN cast('2001-08-16' AS date) AND      ( \n                           cast('2001-08-16' AS date) + INTERVAL '30' day) \n         GROUP BY cr_call_center_sk ), ws AS \n( \n         SELECT   wp_web_page_sk, \n                  sum(ws_ext_sales_price) AS sales, \n                  sum(ws_net_profit)      AS profit \n         FROM     web_sales, \n                  date_dim, \n                  web_page \n         WHERE    ws_sold_date_sk = d_date_sk \n         AND      d_date BETWEEN cast('2001-08-16' AS date) AND      ( \n                           cast('2001-08-16' AS date) + INTERVAL '30' day) \n         AND      ws_web_page_sk = wp_web_page_sk \n         GROUP BY wp_web_page_sk), wr AS \n( \n         SELECT   wp_web_page_sk, \n                  sum(wr_return_amt) AS returns1, \n                  sum(wr_net_loss)   AS profit_loss \n         FROM     web_returns, \n                  date_dim, \n                  web_page \n         WHERE    wr_returned_date_sk = d_date_sk \n         AND      d_date BETWEEN cast('2001-08-16' AS date) AND      ( \n                           cast('2001-08-16' AS date) + INTERVAL '30' day) \n         AND      wr_web_page_sk = wp_web_page_sk \n         GROUP BY wp_web_page_sk) \nSELECT\n         channel , \n         id , \n         sum(sales)   AS sales , \n         sum(returns1) AS returns1 , \n         sum(profit)  AS profit \nFROM     ( \n                   SELECT    'store channel' AS channel , \n                             ss.s_store_sk   AS id , \n                             sales , \n                             COALESCE(returns1, 0)               AS returns1 , \n                             (profit - COALESCE(profit_loss,0)) AS profit \n                   FROM      ss \n                   LEFT JOIN sr \n                   ON        ss.s_store_sk = sr.s_store_sk \n                   UNION ALL \n                   SELECT 'catalog channel' AS channel , \n                          cs_call_center_sk AS id , \n                          sales , \n                          returns1 , \n                          (profit - profit_loss) AS profit \n                   FROM   cs , \n                          cr \n                   UNION ALL \n                   SELECT    'web channel'     AS channel , \n                             ws.wp_web_page_sk AS id , \n                             sales , \n                             COALESCE(returns1, 0)                  returns1 , \n                             (profit - COALESCE(profit_loss,0)) AS profit \n                   FROM      ws \n                   LEFT JOIN wr \n                   ON        ws.wp_web_page_sk = wr.wp_web_page_sk ) x \nGROUP BY rollup (channel, id) \nORDER BY channel , \n         id \nLIMIT 100; \n\n",
+        "data_elements": [
+            {
+                "file": "catalog_returns",
+                "row_group": "0",
+                "num_records": "144067"
+            },
+            {
+                "file": "catalog_sales",
+                "row_group": "0",
+                "num_records": "1441548"
+            },
+            {
+                "file": "date_dim",
+                "row_group": "0",
+                "num_records": "73049"
+            },
+            {
+                "file": "store",
+                "row_group": "0",
+                "num_records": "12"
+            },
+            {
+                "file": "store_returns",
+                "row_group": "0",
+                "num_records": "287514"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "0",
+                "num_records": "2880404"
+            },
+            {
+                "file": "web_page",
+                "row_group": "0",
+                "num_records": "60"
+            },
+            {
+                "file": "web_returns",
+                "row_group": "0",
+                "num_records": "71763"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "0",
+                "num_records": "719384"
+            }
+        ]
+    }
+]

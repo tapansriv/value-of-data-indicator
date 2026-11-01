@@ -1,0 +1,316 @@
+diff --git a/oracle/scripts/draws_convergence.py b/oracle/scripts/draws_convergence.py
+index b440c7d..199b53c 100644
+--- a/oracle/scripts/draws_convergence.py
++++ b/oracle/scripts/draws_convergence.py
+@@ -347,9 +347,11 @@ if __name__ == "__main__":
+                         help="Pool outputs (large; gitignored under data/sweep)")
+     parser.add_argument("--out-dir", default="../../r2d7_results/num_draws")
+     parser.add_argument("--build-only", action="store_true")
++    parser.add_argument("--query-set", default=None,
++                        help="Query-set JSON (default: <results>/common_completed_sf30_60_100.json)")
+     args = parser.parse_args()
+ 
+-    qset = os.path.abspath(os.path.join(args.results, "common_completed_sf30_60_100.json"))
++    qset = os.path.abspath(args.query_set or os.path.join(args.results, "common_completed_sf30_60_100.json"))
+     tables, col_to_tbl = load_schema("../data", "../../tpcds_schema", tpcds_only=True)
+     rng = np.random.default_rng(0)
+ 
+diff --git a/oracle/scripts/run_capture_all.sh b/oracle/scripts/run_capture_all.sh
+index 7615fbd..d7b40d8 100755
+--- a/oracle/scripts/run_capture_all.sh
++++ b/oracle/scripts/run_capture_all.sh
+@@ -1,10 +1,15 @@
+ #!/bin/bash
+ # Capture SF30, SF60, SF100 back to back, converting each as it finishes. Run inside tmux.
+ # A failed SF does not stop the others; rerunning resumes each SF where it left off.
++# Usage: run_capture_all.sh [SF ...]   (default: 30 60 100)
++# Env (optional, passed through to run_spark_sf.sh): PARQUET_ROOT, RESULTS, QUERY_DIR, QUERIES.
+ cd "$(dirname "$0")"
+-for SF in 30 60 100; do
++RESULTS="${RESULTS:-/mnt/tpcds/results}"
++QUERIES="${QUERIES:-1-99}"
++SFS=("$@"); [ ${#SFS[@]} -gt 0 ] || SFS=(30 60 100)
++for SF in "${SFS[@]}"; do
+     echo "=== SF$SF capture start $(date -u +%FT%TZ)"
+-    ./run_spark_sf.sh capture "$SF" 1-99 > "/mnt/tpcds/results/sf${SF}_capture_console.log" 2>&1
++    ./run_spark_sf.sh capture "$SF" "$QUERIES" > "$RESULTS/sf${SF}_capture_console.log" 2>&1
+     echo "=== SF$SF capture exit=$? $(date -u +%FT%TZ)"
+     ./run_spark_sf.sh convert "$SF" 2>&1 | tail -3
+ done
+diff --git a/oracle/scripts/run_spark_sf.sh b/oracle/scripts/run_spark_sf.sh
+index e20748e..fb851e9 100755
+--- a/oracle/scripts/run_spark_sf.sh
++++ b/oracle/scripts/run_spark_sf.sh
+@@ -1,6 +1,10 @@
+ #!/bin/bash
+ # R2D7: row-group capture through the instrumented Spark and the Sec 4.4 pipeline for TPC-DS.
+-# Everything for SF<N> lands in /mnt/tpcds/results/sf<N>.
++# Everything for SF<N> lands in $RESULTS/sf<N>.
++#
++# Env (optional; defaults reproduce the first R2D7 run): PARQUET_ROOT (/mnt/tpcds/parquet),
++# RESULTS (/mnt/tpcds/results), QUERY_DIR (tpcds_queries_spark), QUERIES (1-99: capture's
++# default range and convert's --queries).
+ #
+ #   ./run_spark_sf.sh capture <SF> [first-last]  # long: run inside tmux (TMUX.md). Resumable:
+ #                                                # queries with rg/<N>.done are skipped.
+@@ -18,13 +22,15 @@ REPO="$(cd "$HERE/../.." && pwd)"
+ SPARK_HOME="${SPARK_HOME:-/home/cc/value_of_data/spark}"
+ CAPTURE_JAR="${CAPTURE_JAR:-$HOME/spark-rowgroup-capture.jar}"
+ PY="${PY:-$HOME/vdi-venv/bin/python}"
+-QUERY_DIR="$REPO/spark-lineage-api/benchmarking/tpcds_queries_spark"
+-RESULTS=/mnt/tpcds/results
++QUERY_DIR="${QUERY_DIR:-$REPO/spark-lineage-api/benchmarking/tpcds_queries_spark}"
++RESULTS="${RESULTS:-/mnt/tpcds/results}"
++PARQUET_ROOT="${PARQUET_ROOT:-/mnt/tpcds/parquet}"
++QUERIES="${QUERIES:-1-99}"
+ DRIVER_MEM="${DRIVER_MEM:-48g}"
+ 
+ case "$STEP" in
+ capture)
+-    SF="$1"; RANGE="${2:-1-99}"; OUT="$RESULTS/sf$SF"
++    SF="$1"; RANGE="${2:-$QUERIES}"; OUT="$RESULTS/sf$SF"
+     mkdir -p "$OUT/capture" "$OUT/eventlog" "/mnt/tpcds/spark-tmp/sf$SF"
+     "$SPARK_HOME/bin/spark-submit" \
+         --class RowGroupCapture \
+@@ -34,24 +40,24 @@ capture)
+         --conf spark.local.dir="/mnt/tpcds/spark-tmp/sf$SF" \
+         --conf spark.eventLog.enabled=true \
+         --conf spark.eventLog.dir="file://$OUT/eventlog" \
+-        "$CAPTURE_JAR" "/mnt/tpcds/parquet/sf$SF" "$QUERY_DIR" "$OUT/capture" "$RANGE" \
++        "$CAPTURE_JAR" "$PARQUET_ROOT/sf$SF" "$QUERY_DIR" "$OUT/capture" "$RANGE" \
+         2>&1 | tee -a "$OUT/capture/driver.log"
+     ;;
+ convert)
+     SF="$1"; OUT="$RESULTS/sf$SF"; cd "$HERE"
+-    "$PY" gen_cardinality.py --parquet-dir "/mnt/tpcds/parquet/sf$SF" \
++    "$PY" gen_cardinality.py --parquet-dir "$PARQUET_ROOT/sf$SF" \
+         --out "$OUT/tpcds_cardinality.json"
+     "$PY" tpcds_parse_columns_from_query.py --query-dir "$QUERY_DIR" \
+-        --pattern 'query{}.sql' --queries 1-99 --out-dir "$OUT"
++        --pattern 'query{}.sql' --queries "$QUERIES" --out-dir "$OUT"
+     "$PY" spark_rg_to_access.py --capture-dir "$OUT/capture" --out-dir "$OUT/logs" \
+         --query-dir "$QUERY_DIR" --columns-in-queries "$OUT/tpcds_columns_in_queries.json"
+     ;;
+ common)
+     NAME="$RESULTS/common_completed_sf$(IFS=_; echo "$*").json"
+-    "$PY" - "$NAME" "$@" <<'EOF'
++    "$PY" - "$RESULTS" "$NAME" "$@" <<'EOF'
+ import json, sys
+-out, sfs = sys.argv[1], sys.argv[2:]
+-sets = {sf: set(json.load(open(f"/mnt/tpcds/results/sf{sf}/logs/tpcds_completed.json")))
++results, out, sfs = sys.argv[1], sys.argv[2], sys.argv[3:]
++sets = {sf: set(json.load(open(f"{results}/sf{sf}/logs/tpcds_completed.json")))
+         for sf in sfs}
+ common = sorted(set.intersection(*sets.values()))
+ for sf, s in sets.items():
+diff --git a/tpcds_datagen/convert.py b/tpcds_datagen/convert.py
+index b6789ad..188b540 100755
+--- a/tpcds_datagen/convert.py
++++ b/tpcds_datagen/convert.py
+@@ -4,7 +4,14 @@
+ Usage: convert.py <SF> [--tables t1,t2] [--workers K]
+ 
+ Reads /mnt/tpcds/tpcds_raw/sf<SF>/<table>_<i>_<N>.dat (child order 1..N),
+-writes /mnt/tpcds/parquet/sf<SF>/<table>.parquet (single plain file).
++writes $PARQUET_ROOT/sf<SF>/<table>.parquet (single plain file).
++
++Environment (both optional; unset reproduces the first R2D7 run exactly):
++  PARQUET_ROOT  output root, default /mnt/tpcds/parquet
++  RG_ROWS       if set, every row group except a file's last has exactly RG_ROWS rows
++                (parquet-mr 1.13.1 has no row-count limit, so the byte limit is set to 1 and
++                the size check is pinned to every RG_ROWS records; see WRITER_CONF).
++                Unset: 128 MiB row groups (parquet.block.size = 134217728).
+ 
+ Row order = dsdgen generation order: each chunk file is read as its own DataFrame
+ forced to exactly one input partition (no splitting), the DataFrames are unioned in
+@@ -26,8 +33,27 @@ import tpcds_schema as S  # noqa: E402
+ os.environ.setdefault("JAVA_HOME", "/usr/lib/jvm/java-17-openjdk-amd64")
+ 
+ RAW = "/mnt/tpcds/tpcds_raw/sf{sf}"
+-OUT = "/mnt/tpcds/parquet/sf{sf}"
++PARQUET_ROOT = os.environ.get("PARQUET_ROOT", "/mnt/tpcds/parquet")
++OUT = PARQUET_ROOT + "/sf{sf}"
+ BLOCK = 134217728  # 128 MiB row groups
++RG_ROWS = int(os.environ["RG_ROWS"]) if os.environ.get("RG_ROWS") else None
++
++# Parquet writer settings, applied both as spark.hadoop.* and as write options.
++# RG_ROWS: InternalParquetRecordWriter.checkBlockSizeReached only measures the buffered size
++# every parquet.page.size.row.check.{min,max} records; with a 1-byte block size the first
++# check always flushes, so pinning min = max = RG_ROWS cuts a row group every RG_ROWS records.
++# max-padding = 0 disables block alignment padding (meaningless with a 1-byte block size).
++# Side effect: the same min/max also gate the page-size check, so pages are cut by
++# parquet.page.row.count.limit (20,000 rows) rather than at ~1 MiB.
++if RG_ROWS is None:
++    WRITER_CONF = {"parquet.block.size": str(BLOCK)}
++else:
++    WRITER_CONF = {
++        "parquet.block.size": "1",
++        "parquet.page.size.row.check.min": str(RG_ROWS),
++        "parquet.page.size.row.check.max": str(RG_ROWS),
++        "parquet.writer.max-padding": "0",
++    }
+ HUGE = str(1 << 40)  # 1 TiB: forces one partition per input file
+ 
+ SPARK_CONF = {
+@@ -41,7 +67,7 @@ SPARK_CONF = {
+     "spark.sql.files.openCostInBytes": HUGE,
+     "spark.sql.csv.parser.columnPruning.enabled": "false",
+     "spark.sql.parquet.compression.codec": "snappy",
+-    "spark.hadoop.parquet.block.size": str(BLOCK),
++    **{"spark.hadoop." + k: v for k, v in WRITER_CONF.items()},
+     "spark.hadoop.parquet.enable.summary-metadata": "false",
+ }
+ 
+@@ -107,7 +133,7 @@ def convert_table(spark, sf, table, ddl):
+     t0 = time.time()
+     (df.write.mode("error")
+        .option("compression", "snappy")
+-       .option("parquet.block.size", str(BLOCK))
++       .options(**WRITER_CONF)
+        .parquet("file://" + tmp))
+     secs = time.time() - t0
+     parts = sorted(glob.glob(os.path.join(tmp, "part-*.parquet")))
+@@ -153,13 +179,17 @@ def main():
+         "hadoop_conf": {k: hconf.get(k) for k in (
+             "parquet.block.size", "parquet.page.size", "parquet.dictionary.page.size",
+             "parquet.enable.dictionary", "parquet.writer.version", "parquet.page.row.count.limit",
+-            "parquet.enable.summary-metadata")},
++            "parquet.enable.summary-metadata")
++            + tuple(k for k in WRITER_CONF if k != "parquet.block.size")},
+         "spark_parquet_conf": {k: spark.conf.get(k, None) for k in (
+             "spark.sql.parquet.writeLegacyFormat", "spark.sql.parquet.outputTimestampType",
+             "spark.sql.parquet.fieldId.write.enabled")},
+-        "write_options": {"compression": "snappy", "parquet.block.size": str(BLOCK)},
++        "write_options": {"compression": "snappy", **WRITER_CONF},
+         "csv_options": CSV_OPTS,
+     }
++    if RG_ROWS is not None:
++        effective["parquet_root"] = PARQUET_ROOT
++        effective["rg_rows"] = RG_ROWS
+     print(json.dumps(effective, indent=1), flush=True)
+ 
+     t0 = time.time()
+diff --git a/tpcds_datagen/make_notes.py b/tpcds_datagen/make_notes.py
+index fa81f49..d3ff602 100644
+--- a/tpcds_datagen/make_notes.py
++++ b/tpcds_datagen/make_notes.py
+@@ -1,5 +1,6 @@
+ #!/usr/bin/env python
+-"""Write /mnt/tpcds/parquet/sf<SF>/DATAGEN_NOTES.md from the logs/json the pipeline produced.
++"""Write $PARQUET_ROOT/sf<SF>/DATAGEN_NOTES.md from the logs/json the pipeline produced.
++PARQUET_ROOT defaults to /mnt/tpcds/parquet (env, as for convert.py).
+ Usage: make_notes.py <SF> [--extra "free text"]"""
+ import argparse
+ import hashlib
+@@ -25,7 +26,7 @@ def main():
+     a = ap.parse_args()
+     sf = a.sf
+     raw_dir = f"/mnt/tpcds/tpcds_raw/sf{sf}"
+-    pq_dir = f"/mnt/tpcds/parquet/sf{sf}"
++    pq_dir = os.path.join(os.environ.get("PARQUET_ROOT", "/mnt/tpcds/parquet"), f"sf{sf}")
+     gen_meta = open(os.path.join(raw_dir, "_gen_logs", "gen_meta.txt")).read()
+     raw = json.load(open(os.path.join(raw_dir, "_raw_check.json")))
+     conv = json.load(open(os.path.join(pq_dir, "_convert_meta.json")))
+@@ -64,8 +65,19 @@ def main():
+     L.append("- Footer created_by: `" + next(iter(vt.values()))["created_by"] + "`")
+     L.append("- Spark: " + ", ".join(f"{k}={v}" for k, v in eff["spark_core_conf"].items()) + ", "
+              + ", ".join(f"{k}={v}" for k, v in eff["spark_conf"].items()))
+-    L.append("- Parquet writer: parquet.block.size=134217728 (128 MiB row groups; set both as "
+-             "spark.hadoop.parquet.block.size and as the write option), compression=snappy, "
++    if "rg_rows" in eff:
++        wo = {k: v for k, v in eff["write_options"].items() if k != "compression"}
++        L.append(f"- Row groups: exactly {eff['rg_rows']:,} rows each except each file's last "
++                 "(asserted by verify.py). parquet-mr 1.13.1 has no row-count limit, so the writer is set to "
++                 + ", ".join(f"{k}={v}" for k, v in wo.items()) + " (set both as spark.hadoop.* and as "
++                 "write options): with a 1-byte block size the size check, which runs every "
++                 "page.size.row.check.{min,max} records, always flushes. Side effect: the same min/max gate "
++                 "the page-size check, so pages are cut at page.row.count.limit (20,000 rows) rather than ~1 MiB.")
++        blk = "Other writer settings: "
++    else:
++        blk = ("parquet.block.size=134217728 (128 MiB row groups; set both as "
++               "spark.hadoop.parquet.block.size and as the write option), ")
++    L.append("- Parquet writer: " + blk + "compression=snappy, "
+              "parquet.enable.summary-metadata=false. Everything else at Spark 3.5.5 / parquet-mr 1.13.1 "
+              "defaults (driver Hadoop conf, null = unset so the default applies: " + json.dumps(eff["hadoop_conf"]) + "; Spark: "
+              + json.dumps(eff["spark_parquet_conf"]) + "). Those defaults are: parquet.page.size=1 MiB, "
+diff --git a/tpcds_datagen/run_sf.sh b/tpcds_datagen/run_sf.sh
+index 1edc645..8c651b2 100755
+--- a/tpcds_datagen/run_sf.sh
++++ b/tpcds_datagen/run_sf.sh
+@@ -1,15 +1,17 @@
+ #!/usr/bin/env bash
+ # Full pipeline for one or more scale factors, sequentially; stops at the first failure.
+ # Usage: run_sf.sh <NCHILDREN> <SF> [<SF> ...]     (run inside tmux session "datagen")
++# Env (optional): PARQUET_ROOT (default /mnt/tpcds/parquet), RG_ROWS (see convert.py), SKIP_GEN=1.
+ set -euo pipefail
+ N=${1:?children}; shift
+ HERE=$(cd "$(dirname "$0")" && pwd)
+ PY=~/vdi-venv/bin/python
+ export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
++PQ=${PARQUET_ROOT:-/mnt/tpcds/parquet}
+ 
+ for SF in "$@"; do
+-  mkdir -p /mnt/tpcds/tpcds_raw/sf$SF /mnt/tpcds/parquet/sf$SF
+-  LOG=/mnt/tpcds/parquet/sf$SF/_pipeline.log
++  mkdir -p /mnt/tpcds/tpcds_raw/sf$SF $PQ/sf$SF
++  LOG=$PQ/sf$SF/_pipeline.log
+   set +e
+   (
+     set -e
+@@ -17,16 +19,16 @@ for SF in "$@"; do
+     if [ "${SKIP_GEN:-0}" = "1" ]; then
+       echo "=== SKIP_GEN=1: reusing existing raw data + _raw_check.json (resume after a failed convert)"
+       test -f /mnt/tpcds/tpcds_raw/sf$SF/_raw_check.json
+-      rm -rf /mnt/tpcds/parquet/sf$SF/_tmp_*
++      rm -rf $PQ/sf$SF/_tmp_*
+     else
+       "$HERE/gen.sh" "$SF" "$N"
+       echo "=== raw check $(date -Is)"
+       t0=$(date +%s); $PY "$HERE/verify.py" raw "$SF"; echo "raw_check_s: $(( $(date +%s)-t0 ))"
+     fi
+     echo "=== convert $(date -Is)"; free -g | head -2
+-    t0=$(date +%s); $PY "$HERE/convert.py" "$SF" --workers 8 > /mnt/tpcds/parquet/sf$SF/_convert.log 2>&1 \
+-      || { echo "CONVERT FAILED, see _convert.log"; tail -50 /mnt/tpcds/parquet/sf$SF/_convert.log; exit 1; }
+-    grep -E '^\{"table"|convert wallclock' /mnt/tpcds/parquet/sf$SF/_convert.log
++    t0=$(date +%s); $PY "$HERE/convert.py" "$SF" --workers 8 > $PQ/sf$SF/_convert.log 2>&1 \
++      || { echo "CONVERT FAILED, see _convert.log"; tail -50 $PQ/sf$SF/_convert.log; exit 1; }
++    grep -E '^\{"table"|convert wallclock' $PQ/sf$SF/_convert.log
+     echo "convert_s: $(( $(date +%s)-t0 ))"
+     echo "=== verify $(date -Is)"
+     t0=$(date +%s); $PY "$HERE/verify.py" parquet "$SF" --workers 8; echo "verify_s: $(( $(date +%s)-t0 ))"
+diff --git a/tpcds_datagen/verify.py b/tpcds_datagen/verify.py
+index 2dd8c02..86cd793 100644
+--- a/tpcds_datagen/verify.py
++++ b/tpcds_datagen/verify.py
+@@ -9,6 +9,8 @@ Parquet checks (fail loudly -> nonzero exit):
+   * footer num_rows == raw line count (sum over chunks)
+   * schema == DDL (names, order, types)
+   * no column is 100% null (from row-group statistics null_count)
++  * if RG_ROWS is set (env, as for convert.py): every row group except the file's last has
++    exactly RG_ROWS rows, and the last has 1..RG_ROWS
+   * row order/content: rows re-rendered from Parquet in dsdgen text format are
+     byte-identical to the raw lines. Default: first/last 100 lines of every chunk.
+     --full: every row of every table.
+@@ -25,7 +27,7 @@ from concurrent.futures import ProcessPoolExecutor
+ 
+ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+ import tpcds_schema as S  # noqa: E402
+-from convert import chunk_files, RAW, OUT  # noqa: E402
++from convert import chunk_files, RAW, OUT, RG_ROWS  # noqa: E402
+ 
+ EDGE = 100
+ # Columns that dsdgen leaves empty in every row (confirmed against raw text at SF1 by the
+@@ -182,6 +184,13 @@ def check_table(args):
+     r["null_counts"] = nulls
+     rg_rows = [md.row_group(i).num_rows for i in range(md.num_row_groups)]
+     r["row_group_rows_min_max"] = [min(rg_rows), max(rg_rows)] if rg_rows else None
++    if RG_ROWS is not None:
++        r["rg_rows_expected"] = RG_ROWS
++        wrong = [(i, n) for i, n in enumerate(rg_rows[:-1]) if n != RG_ROWS]
++        if wrong:
++            errs.append(f"{len(wrong)} non-final row groups != {RG_ROWS} rows, first: {wrong[:5]}")
++        if rg_rows and not 1 <= rg_rows[-1] <= RG_ROWS:
++            errs.append(f"last row group has {rg_rows[-1]} rows (want 1..{RG_ROWS})")
+     rg0 = md.row_group(0)
+     r["rg0_codecs"] = sorted({rg0.column(j).compression for j in range(md.num_columns)})
+     r["rg0_encodings"] = sorted({e for j in range(md.num_columns) for e in rg0.column(j).encodings})

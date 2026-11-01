@@ -1,0 +1,33 @@
+[
+    {
+        "query": "tpcds query 58 (spark row-group capture)",
+        "query_text": "-- start query 58 in stream 0 using template query58.tpl \nWITH ss_items \n     AS (SELECT i_item_id               item_id, \n                Sum(ss_ext_sales_price) ss_item_rev \n         FROM   store_sales, \n                item, \n                date_dim \n         WHERE  ss_item_sk = i_item_sk \n                AND d_date IN (SELECT d_date \n                               FROM   date_dim \n                               WHERE  d_week_seq = (SELECT d_week_seq \n                                                    FROM   date_dim \n                                                    WHERE  d_date = '2002-02-25' \n                                                   )) \n                AND ss_sold_date_sk = d_date_sk \n         GROUP  BY i_item_id), \n     cs_items \n     AS (SELECT i_item_id               item_id, \n                Sum(cs_ext_sales_price) cs_item_rev \n         FROM   catalog_sales, \n                item, \n                date_dim \n         WHERE  cs_item_sk = i_item_sk \n                AND d_date IN (SELECT d_date \n                               FROM   date_dim \n                               WHERE  d_week_seq = (SELECT d_week_seq \n                                                    FROM   date_dim \n                                                    WHERE  d_date = '2002-02-25' \n                                                   )) \n                AND cs_sold_date_sk = d_date_sk \n         GROUP  BY i_item_id), \n     ws_items \n     AS (SELECT i_item_id               item_id, \n                Sum(ws_ext_sales_price) ws_item_rev \n         FROM   web_sales, \n                item, \n                date_dim \n         WHERE  ws_item_sk = i_item_sk \n                AND d_date IN (SELECT d_date \n                               FROM   date_dim \n                               WHERE  d_week_seq = (SELECT d_week_seq \n                                                    FROM   date_dim \n                                                    WHERE  d_date = '2002-02-25' \n                                                   )) \n                AND ws_sold_date_sk = d_date_sk \n         GROUP  BY i_item_id) \nSELECT ss_items.item_id, \n               ss_item_rev, \n               ss_item_rev / ( ss_item_rev + cs_item_rev + ws_item_rev ) / 3 * \n               100 ss_dev, \n               cs_item_rev, \n               cs_item_rev / ( ss_item_rev + cs_item_rev + ws_item_rev ) / 3 * \n               100 cs_dev, \n               ws_item_rev, \n               ws_item_rev / ( ss_item_rev + cs_item_rev + ws_item_rev ) / 3 * \n               100 ws_dev, \n               ( ss_item_rev + cs_item_rev + ws_item_rev ) / 3 \n               average \nFROM   ss_items, \n       cs_items, \n       ws_items \nWHERE  ss_items.item_id = cs_items.item_id \n       AND ss_items.item_id = ws_items.item_id \n       AND ss_item_rev BETWEEN 0.9 * cs_item_rev AND 1.1 * cs_item_rev \n       AND ss_item_rev BETWEEN 0.9 * ws_item_rev AND 1.1 * ws_item_rev \n       AND cs_item_rev BETWEEN 0.9 * ss_item_rev AND 1.1 * ss_item_rev \n       AND cs_item_rev BETWEEN 0.9 * ws_item_rev AND 1.1 * ws_item_rev \n       AND ws_item_rev BETWEEN 0.9 * ss_item_rev AND 1.1 * ss_item_rev \n       AND ws_item_rev BETWEEN 0.9 * cs_item_rev AND 1.1 * cs_item_rev \nORDER  BY item_id, \n          ss_item_rev\nLIMIT 100; \n",
+        "data_elements": [
+            {
+                "file": "catalog_sales",
+                "row_group": "0",
+                "num_records": "1441548"
+            },
+            {
+                "file": "date_dim",
+                "row_group": "0",
+                "num_records": "73049"
+            },
+            {
+                "file": "item",
+                "row_group": "0",
+                "num_records": "18000"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "0",
+                "num_records": "2880404"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "0",
+                "num_records": "719384"
+            }
+        ]
+    }
+]

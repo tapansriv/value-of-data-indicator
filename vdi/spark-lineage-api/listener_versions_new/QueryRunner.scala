@@ -39,7 +39,9 @@ object QueryRunner {
 
     val spark = SparkSession.builder()
       .appName("QueryRunner")
-      .master("local[*]")
+      // Master intentionally unset: governed by --master on spark-submit, so the
+      // same jar runs single-node (spark-submit defaults to local[*]) or against a
+      // standalone cluster. Setting it here silently overrides --master.
       // don't reuse computation
       .config("spark.sql.execution.reuseExchange", "false")
       .config("spark.sql.execution.reuseSubquery", "false")

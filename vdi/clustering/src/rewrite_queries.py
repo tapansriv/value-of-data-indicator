@@ -87,6 +87,7 @@ def rewrite_query(sql, target_tables, root):
 def process_queries():
     ensure_dir(OUT_VALUE_DIR)
     ensure_dir(OUT_FREQ_DIR)
+    ensure_dir(OUT_RAND_DIR)
     ensure_dir(OUT_PLAIN_DIR)
 
     for file in Path(SRC_QUERY_DIR).glob("*.sql"):
@@ -100,7 +101,9 @@ def process_queries():
         (Path(OUT_VALUE_DIR) / file.name).write_text(value_sql)
         (Path(OUT_FREQ_DIR) / file.name).write_text(freq_sql)
         (Path(OUT_RAND_DIR) / file.name).write_text(rand_sql)
-        (Path(OUT_PLAIN_DIR) / file.name).write_text(rand_sql)
+        # Was rand_sql until 2026-10-07: the published "No Sort" baseline read Random's
+        # sorted tables in 27 queries. Profiles in data/plain/ predate this fix.
+        (Path(OUT_PLAIN_DIR) / file.name).write_text(plain_sql)
 
         print(f"Rewrote {file.name}")
 

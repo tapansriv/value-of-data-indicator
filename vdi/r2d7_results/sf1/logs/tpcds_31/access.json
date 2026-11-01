@@ -1,0 +1,28 @@
+[
+    {
+        "query": "tpcds query 31 (spark row-group capture)",
+        "query_text": "-- start query 31 in stream 0 using template query31.tpl \nWITH ss \n     AS (SELECT ca_county, \n                d_qoy, \n                d_year, \n                Sum(ss_ext_sales_price) AS store_sales \n         FROM   store_sales, \n                date_dim, \n                customer_address \n         WHERE  ss_sold_date_sk = d_date_sk \n                AND ss_addr_sk = ca_address_sk \n         GROUP  BY ca_county, \n                   d_qoy, \n                   d_year), \n     ws \n     AS (SELECT ca_county, \n                d_qoy, \n                d_year, \n                Sum(ws_ext_sales_price) AS web_sales \n         FROM   web_sales, \n                date_dim, \n                customer_address \n         WHERE  ws_sold_date_sk = d_date_sk \n                AND ws_bill_addr_sk = ca_address_sk \n         GROUP  BY ca_county, \n                   d_qoy, \n                   d_year) \nSELECT ss1.ca_county, \n       ss1.d_year, \n       ws2.web_sales / ws1.web_sales     web_q1_q2_increase, \n       ss2.store_sales / ss1.store_sales store_q1_q2_increase, \n       ws3.web_sales / ws2.web_sales     web_q2_q3_increase, \n       ss3.store_sales / ss2.store_sales store_q2_q3_increase \nFROM   ss ss1, \n       ss ss2, \n       ss ss3, \n       ws ws1, \n       ws ws2, \n       ws ws3 \nWHERE  ss1.d_qoy = 1 \n       AND ss1.d_year = 2001 \n       AND ss1.ca_county = ss2.ca_county \n       AND ss2.d_qoy = 2 \n       AND ss2.d_year = 2001 \n       AND ss2.ca_county = ss3.ca_county \n       AND ss3.d_qoy = 3 \n       AND ss3.d_year = 2001 \n       AND ss1.ca_county = ws1.ca_county \n       AND ws1.d_qoy = 1 \n       AND ws1.d_year = 2001 \n       AND ws1.ca_county = ws2.ca_county \n       AND ws2.d_qoy = 2 \n       AND ws2.d_year = 2001 \n       AND ws1.ca_county = ws3.ca_county \n       AND ws3.d_qoy = 3 \n       AND ws3.d_year = 2001 \n       AND CASE \n             WHEN ws1.web_sales > 0 THEN ws2.web_sales / ws1.web_sales \n             ELSE NULL \n           END > CASE \n                   WHEN ss1.store_sales > 0 THEN \n                   ss2.store_sales / ss1.store_sales \n                   ELSE NULL \n                 END \n       AND CASE \n             WHEN ws2.web_sales > 0 THEN ws3.web_sales / ws2.web_sales \n             ELSE NULL \n           END > CASE \n                   WHEN ss2.store_sales > 0 THEN \n                   ss3.store_sales / ss2.store_sales \n                   ELSE NULL \n                 END \nORDER  BY ss1.d_year; \n",
+        "data_elements": [
+            {
+                "file": "customer_address",
+                "row_group": "0",
+                "num_records": "50000"
+            },
+            {
+                "file": "date_dim",
+                "row_group": "0",
+                "num_records": "73049"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "0",
+                "num_records": "2880404"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "0",
+                "num_records": "719384"
+            }
+        ]
+    }
+]

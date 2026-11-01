@@ -1,0 +1,23 @@
+[
+    {
+        "query": "tpcds query 51 (spark row-group capture)",
+        "query_text": "-- start query 51 in stream 0 using template query51.tpl \nWITH web_v1 AS \n( \n         SELECT   ws_item_sk item_sk, \n                  d_date, \n                  sum(Sum(ws_sales_price)) OVER (partition BY ws_item_sk ORDER BY d_date rows BETWEEN UNBOUNDED PRECEDING AND      CURRENT row) cume_sales\n         FROM     web_sales , \n                  date_dim \n         WHERE    ws_sold_date_sk=d_date_sk \n         AND      d_month_seq BETWEEN 1192 AND      1192+11 \n         AND      ws_item_sk IS NOT NULL \n         GROUP BY ws_item_sk, \n                  d_date), store_v1 AS \n( \n         SELECT   ss_item_sk item_sk, \n                  d_date, \n                  sum(sum(ss_sales_price)) OVER (partition BY ss_item_sk ORDER BY d_date rows BETWEEN UNBOUNDED PRECEDING AND      CURRENT row) cume_sales\n         FROM     store_sales , \n                  date_dim \n         WHERE    ss_sold_date_sk=d_date_sk \n         AND      d_month_seq BETWEEN 1192 AND      1192+11 \n         AND      ss_item_sk IS NOT NULL \n         GROUP BY ss_item_sk, \n                  d_date) \nSELECT \n         * \nFROM     ( \n                  SELECT   item_sk , \n                           d_date , \n                           web_sales , \n                           store_sales , \n                           max(web_sales) OVER (partition BY item_sk ORDER BY d_date rows BETWEEN UNBOUNDED PRECEDING AND      CURRENT row)   web_cumulative ,\n                           max(store_sales) OVER (partition BY item_sk ORDER BY d_date rows BETWEEN UNBOUNDED PRECEDING AND      CURRENT row) store_cumulative\n                  FROM     ( \n                                           SELECT \n                                                           CASE \n                                                                           WHEN web.item_sk IS NOT NULL THEN web.item_sk\n                                                                           ELSE store.item_sk \n                                                           END item_sk , \n                                                           CASE \n                                                                           WHEN web.d_date IS NOT NULL THEN web.d_date\n                                                                           ELSE store.d_date \n                                                           END              d_date , \n                                                           web.cume_sales   web_sales , \n                                                           store.cume_sales store_sales \n                                           FROM            web_v1 web \n                                           FULL OUTER JOIN store_v1 store \n                                           ON              ( \n                                                                           web.item_sk = store.item_sk\n                                                           AND             web.d_date = store.d_date) )x )y\nWHERE    web_cumulative > store_cumulative \nORDER BY item_sk , \n         d_date \nLIMIT 100; \n\n",
+        "data_elements": [
+            {
+                "file": "date_dim",
+                "row_group": "0",
+                "num_records": "73049"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "0",
+                "num_records": "2880404"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "0",
+                "num_records": "719384"
+            }
+        ]
+    }
+]

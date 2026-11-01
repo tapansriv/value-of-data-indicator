@@ -3,7 +3,7 @@ SELECT
 FROM (
     SELECT
       COUNT(*) AS h8_30_to_9
-    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_rand/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store
+    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store
     WHERE
       ss_sold_time_sk = time_dim.t_time_sk
       AND ss_hdemo_sk = household_demographics.hd_demo_sk
@@ -28,7 +28,7 @@ FROM (
 ) AS s1, (
     SELECT
       COUNT(*) AS h9_to_9_30
-    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_rand/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store
+    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store
     WHERE
       ss_sold_time_sk = time_dim.t_time_sk
       AND ss_hdemo_sk = household_demographics.hd_demo_sk
@@ -53,7 +53,7 @@ FROM (
 ) AS s2, (
     SELECT
       COUNT(*) AS h9_30_to_10
-    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_rand/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store
+    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store
     WHERE
       ss_sold_time_sk = time_dim.t_time_sk
       AND ss_hdemo_sk = household_demographics.hd_demo_sk
@@ -78,7 +78,7 @@ FROM (
 ) AS s3, (
     SELECT
       COUNT(*) AS h10_to_10_30
-    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_rand/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store
+    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store
     WHERE
       ss_sold_time_sk = time_dim.t_time_sk
       AND ss_hdemo_sk = household_demographics.hd_demo_sk
@@ -103,7 +103,7 @@ FROM (
 ) AS s4, (
     SELECT
       COUNT(*) AS h10_30_to_11
-    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_rand/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store
+    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store
     WHERE
       ss_sold_time_sk = time_dim.t_time_sk
       AND ss_hdemo_sk = household_demographics.hd_demo_sk
@@ -128,7 +128,7 @@ FROM (
 ) AS s5, (
     SELECT
       COUNT(*) AS h11_to_11_30
-    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_rand/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store
+    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store
     WHERE
       ss_sold_time_sk = time_dim.t_time_sk
       AND ss_hdemo_sk = household_demographics.hd_demo_sk
@@ -153,7 +153,7 @@ FROM (
 ) AS s6, (
     SELECT
       COUNT(*) AS h11_30_to_12
-    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_rand/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store
+    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store
     WHERE
       ss_sold_time_sk = time_dim.t_time_sk
       AND ss_hdemo_sk = household_demographics.hd_demo_sk
@@ -178,7 +178,7 @@ FROM (
 ) AS s7, (
     SELECT
       COUNT(*) AS h12_to_12_30
-    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_rand/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store
+    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store
     WHERE
       ss_sold_time_sk = time_dim.t_time_sk
       AND ss_hdemo_sk = household_demographics.hd_demo_sk

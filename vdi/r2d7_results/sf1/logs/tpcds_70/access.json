@@ -1,0 +1,23 @@
+[
+    {
+        "query": "tpcds query 70 (spark row-group capture)",
+        "query_text": "-- start query 70 in stream 0 using template query70.tpl \nSELECT Sum(ss_net_profit)                     AS total_sum, \n               s_state, \n               s_county, \n               Grouping(s_state) + Grouping(s_county) AS lochierarchy, \n               Rank() \n                 OVER ( \n                   partition BY Grouping(s_state)+Grouping(s_county), CASE WHEN \n                 Grouping( \n                 s_county) = 0 THEN s_state END \n                   ORDER BY Sum(ss_net_profit) DESC)  AS rank_within_parent \nFROM   store_sales, \n       date_dim d1, \n       store \nWHERE  d1.d_month_seq BETWEEN 1200 AND 1200 + 11 \n       AND d1.d_date_sk = ss_sold_date_sk \n       AND s_store_sk = ss_store_sk \n       AND s_state IN (SELECT s_state \n                       FROM   (SELECT s_state                               AS \n                                      s_state, \n                                      Rank() \n                                        OVER ( \n                                          partition BY s_state \n                                          ORDER BY Sum(ss_net_profit) DESC) AS \n                                      ranking \n                               FROM   store_sales, \n                                      store, \n                                      date_dim \n                               WHERE  d_month_seq BETWEEN 1200 AND 1200 + 11 \n                                      AND d_date_sk = ss_sold_date_sk \n                                      AND s_store_sk = ss_store_sk \n                               GROUP  BY s_state) tmp1 \n                       WHERE  ranking <= 5) \nGROUP  BY rollup( s_state, s_county ) \nORDER  BY lochierarchy DESC, \n          CASE \n            WHEN lochierarchy = 0 THEN s_state \n          END, \n          rank_within_parent\nLIMIT 100; \n",
+        "data_elements": [
+            {
+                "file": "date_dim",
+                "row_group": "0",
+                "num_records": "73049"
+            },
+            {
+                "file": "store",
+                "row_group": "0",
+                "num_records": "12"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "0",
+                "num_records": "2880404"
+            }
+        ]
+    }
+]

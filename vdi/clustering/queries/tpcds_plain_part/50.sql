@@ -51,7 +51,7 @@ SELECT
   SUM(CASE WHEN (
     sr_returned_date_sk - ss_sold_date_sk > 120
   ) THEN 1 ELSE 0 END) AS days_over_120
-FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_rand/store_returns/*.parquet') AS store_returns, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS d1, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS d2
+FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/store_returns/*.parquet') AS store_returns, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS d1, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS d2
 WHERE
   d2.d_year = 2001
   AND d2.d_moy = 8

@@ -14,7 +14,7 @@ SELECT
   AVG(cs_quantity) AS catalog_sales_quantityave,
   STDDEV_SAMP(cs_quantity) AS catalog_sales_quantitystdev,
   STDDEV_SAMP(cs_quantity) / AVG(cs_quantity) AS catalog_sales_quantitycov
-FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_rand/store_returns/*.parquet') AS store_returns, READ_PARQUET('/home/cc/tpcds_cluster_base/catalog_sales/*.parquet') AS catalog_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS d1, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS d2, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS d3, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store, READ_PARQUET('/home/cc/tpcds_cluster_base/item/*.parquet') AS item
+FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/store_returns/*.parquet') AS store_returns, READ_PARQUET('/home/cc/tpcds_cluster_base/catalog_sales/*.parquet') AS catalog_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS d1, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS d2, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS d3, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store, READ_PARQUET('/home/cc/tpcds_cluster_base/item/*.parquet') AS item
 WHERE
   d1.d_quarter_name = '2001Q1'
   AND d1.d_date_sk = ss_sold_date_sk

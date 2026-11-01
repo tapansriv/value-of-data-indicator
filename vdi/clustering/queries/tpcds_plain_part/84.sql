@@ -3,7 +3,7 @@ SELECT
   (
     COALESCE(c_last_name, '') || ', '
   ) || COALESCE(c_first_name, '') AS customername
-FROM READ_PARQUET('/home/cc/tpcds_cluster_base/customer/*.parquet') AS customer, READ_PARQUET('/home/cc/tpcds_cluster_base/customer_address/*.parquet') AS customer_address, READ_PARQUET('/home/cc/tpcds_cluster_base/customer_demographics/*.parquet') AS customer_demographics, READ_PARQUET('/home/cc/tpcds_cluster_rand/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/income_band/*.parquet') AS income_band, READ_PARQUET('/home/cc/tpcds_cluster_rand/store_returns/*.parquet') AS store_returns
+FROM READ_PARQUET('/home/cc/tpcds_cluster_base/customer/*.parquet') AS customer, READ_PARQUET('/home/cc/tpcds_cluster_base/customer_address/*.parquet') AS customer_address, READ_PARQUET('/home/cc/tpcds_cluster_base/customer_demographics/*.parquet') AS customer_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/income_band/*.parquet') AS income_band, READ_PARQUET('/home/cc/tpcds_cluster_base/store_returns/*.parquet') AS store_returns
 WHERE
   ca_city = 'Edgewood'
   AND c_current_addr_sk = ca_address_sk

@@ -1,0 +1,28 @@
+[
+    {
+        "query": "tpcds query 74 (spark row-group capture)",
+        "query_text": "-- start query 74 in stream 0 using template query74.tpl \nWITH year_total \n     AS (SELECT c_customer_id    customer_id, \n                c_first_name     customer_first_name, \n                c_last_name      customer_last_name, \n                d_year           AS year1, \n                Sum(ss_net_paid) year_total, \n                's'              sale_type \n         FROM   customer, \n                store_sales, \n                date_dim \n         WHERE  c_customer_sk = ss_customer_sk \n                AND ss_sold_date_sk = d_date_sk \n                AND d_year IN ( 1999, 1999 + 1 ) \n         GROUP  BY c_customer_id, \n                   c_first_name, \n                   c_last_name, \n                   d_year \n         UNION ALL \n         SELECT c_customer_id    customer_id, \n                c_first_name     customer_first_name, \n                c_last_name      customer_last_name, \n                d_year           AS year1, \n                Sum(ws_net_paid) year_total, \n                'w'              sale_type \n         FROM   customer, \n                web_sales, \n                date_dim \n         WHERE  c_customer_sk = ws_bill_customer_sk \n                AND ws_sold_date_sk = d_date_sk \n                AND d_year IN ( 1999, 1999 + 1 ) \n         GROUP  BY c_customer_id, \n                   c_first_name, \n                   c_last_name, \n                   d_year) \nSELECT t_s_secyear.customer_id, \n               t_s_secyear.customer_first_name, \n               t_s_secyear.customer_last_name \nFROM   year_total t_s_firstyear, \n       year_total t_s_secyear, \n       year_total t_w_firstyear, \n       year_total t_w_secyear \nWHERE  t_s_secyear.customer_id = t_s_firstyear.customer_id \n       AND t_s_firstyear.customer_id = t_w_secyear.customer_id \n       AND t_s_firstyear.customer_id = t_w_firstyear.customer_id \n       AND t_s_firstyear.sale_type = 's' \n       AND t_w_firstyear.sale_type = 'w' \n       AND t_s_secyear.sale_type = 's' \n       AND t_w_secyear.sale_type = 'w' \n       AND t_s_firstyear.year1 = 1999 \n       AND t_s_secyear.year1 = 1999 + 1 \n       AND t_w_firstyear.year1 = 1999 \n       AND t_w_secyear.year1 = 1999 + 1 \n       AND t_s_firstyear.year_total > 0 \n       AND t_w_firstyear.year_total > 0 \n       AND CASE \n             WHEN t_w_firstyear.year_total > 0 THEN t_w_secyear.year_total / \n                                                    t_w_firstyear.year_total \n             ELSE NULL \n           END > CASE \n                   WHEN t_s_firstyear.year_total > 0 THEN \n                   t_s_secyear.year_total / \n                   t_s_firstyear.year_total \n                   ELSE NULL \n                 END \nORDER  BY 1, \n          2, \n          3\nLIMIT 100; \n",
+        "data_elements": [
+            {
+                "file": "customer",
+                "row_group": "0",
+                "num_records": "100000"
+            },
+            {
+                "file": "date_dim",
+                "row_group": "0",
+                "num_records": "73049"
+            },
+            {
+                "file": "store_sales",
+                "row_group": "0",
+                "num_records": "2880404"
+            },
+            {
+                "file": "web_sales",
+                "row_group": "0",
+                "num_records": "719384"
+            }
+        ]
+    }
+]

@@ -1,0 +1,84 @@
+diff --git a/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileFormat.scala b/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileFormat.scala
+index 9191a0b421..707b35820c 100644
+--- a/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileFormat.scala
++++ b/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileFormat.scala
+@@ -204,9 +204,7 @@ class ParquetFileFormat
+     val rowGroupMap = mutable.Map.empty[String, mutable.Set[Int]]
+     val execId = sparkSession.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
+     assert(execId != null)
+-    val acc = new RowGroupAccumulator
+-    sparkSession.sparkContext.register(acc, "RowGroupAccumulator")
+-    RowGroupMetricsRegistry.put(execId, acc)
++    val acc = RowGroupMetricsRegistry.getOrCreate(execId, sparkSession.sparkContext)
+ 
+     (file: PartitionedFile) => {
+       assert(file.partitionValues.numFields == partitionSchema.size)
+@@ -298,18 +296,25 @@ class ParquetFileFormat
+         // Instead, we use FileScanRDD's task completion listener to close this iterator.
+         val iter = new RecordReaderIterator(vectorizedReader)
+         try {
++          // lastResult is a ThreadLocal that RowGroupFilter only sets when a filter is pushed
++          // down. Executor threads are reused across tasks and queries, so without clearing it
++          // an unfiltered scan would pick up a previous task's (possibly another file's) result.
++          RowGroupFilter.clearResult()
+           vectorizedReader.initialize(split, hadoopAttemptContext, Option.apply(fileFooter))
+           val filteredRowGroups = RowGroupFilter.getLastResult
+           val rowGroupInfo = new ListBuffer[(Int, Long, Long)]
+ 
+-          // if NULL then the table scanned all row groups (skipped the Filter entirely)
++          // if NULL then no filter was pushed down and every row group in this split is read.
++          // fileFooter was read with the split's range, so its blocks are exactly those.
+           if (filteredRowGroups != null) {
+             val selectedRowGroups = filteredRowGroups.accepted
+             selectedRowGroups.forEach{ rg =>
+               rowGroupInfo += ((rg.getOrdinal, rg.getRowIndexOffset, rg.getRowCount))
+             }
+           } else {
+-            rowGroupInfo += ((-1, 0, -1))
++            fileFooter.getBlocks.forEach { rg =>
++              rowGroupInfo += ((rg.getOrdinal, rg.getRowIndexOffset, rg.getRowCount))
++            }
+           }
+           if (rowGroupInfo.nonEmpty) {
+             acc.add(file.filePath.toString -> rowGroupInfo.toList)
+diff --git a/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/RowGroupMetricsRegistry.scala b/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/RowGroupMetricsRegistry.scala
+index 08b95e1be4..7b556d4bc5 100644
+--- a/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/RowGroupMetricsRegistry.scala
++++ b/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/RowGroupMetricsRegistry.scala
+@@ -20,20 +20,34 @@ package org.apache.spark.sql.execution.datasources.parquet
+ import java.util
+ import java.util.concurrent.ConcurrentHashMap
+ 
++import org.apache.spark.SparkContext
++
+ object RowGroupMetricsRegistry {
+   private val byExecId = new ConcurrentHashMap[String, RowGroupAccumulator]()
+   val keys = new util.ArrayList[String]()
+ 
+   def put(execId: String, acc: RowGroupAccumulator): Unit = {
+-    keys.add(execId)
++    keys.synchronized { keys.add(execId) }
+     byExecId.put(execId, acc)
+   }
+ 
++  // A query plans one FileSourceScanExec per scanned relation (plus any in subqueries), and
++  // each calls buildReaderWithPartitionValues under the same execution ID. They must share a
++  // single accumulator: put() would let each scan replace the previous one, leaving only the
++  // last scan's row groups in the registry.
++  def getOrCreate(execId: String, sc: SparkContext): RowGroupAccumulator =
++    byExecId.computeIfAbsent(execId, id => {
++      val acc = new RowGroupAccumulator
++      sc.register(acc, "RowGroupAccumulator")
++      keys.synchronized { keys.add(id) }
++      acc
++    })
++
+   def get(execId: String): Option[RowGroupAccumulator] =
+     Option(byExecId.get(execId))
+ 
+   def remove(execId: String): Unit = {
+-    keys.remove(execId)
++    keys.synchronized { keys.remove(execId) }
+     byExecId.remove(execId)
+   }
+ }

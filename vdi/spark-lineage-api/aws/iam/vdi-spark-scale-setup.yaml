@@ -1,0 +1,329 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  VDI Spark scale-up experiment (PVLDB paper 926 revision). Creates an instance
+  role for the experiment's EC2 nodes, narrowly scoped permissions for the IAM
+  user who runs the experiment, a results bucket, and a monthly budget alert.
+  Deleting this stack removes everything except the results bucket, which is
+  kept on purpose because it holds research data.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: {default: "Budget alerts"}
+        Parameters: [BudgetAlertEmail, SecondBudgetAlertEmail, MonthlyBudgetUSD]
+      - Label: {default: "Leave these as they are"}
+        Parameters: [OperatorUserName]
+    ParameterLabels:
+      BudgetAlertEmail: {default: "Your email address, for budget alerts"}
+      SecondBudgetAlertEmail: {default: "A second email for budget alerts (optional)"}
+      MonthlyBudgetUSD: {default: "Monthly alert threshold, in US dollars"}
+      OperatorUserName: {default: "IAM user who runs the experiment"}
+
+Parameters:
+  BudgetAlertEmail:
+    Type: String
+    AllowedPattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+    ConstraintDescription: Must be an email address.
+    Description: >-
+      Receives an email when account spend passes 50% and 80% of the threshold,
+      or is forecast to exceed it.
+  SecondBudgetAlertEmail:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+    ConstraintDescription: Must be empty or an email address.
+    Description: Optional. Leave empty for none.
+  MonthlyBudgetUSD:
+    Type: Number
+    Default: 800
+    MinValue: 1
+    Description: Alerts are based on total spend for the whole account in a calendar month.
+  OperatorUserName:
+    Type: String
+    Default: tapan
+    Description: Existing IAM user that receives the experiment permissions.
+
+Rules:
+  DeployInOhio:
+    Assertions:
+      - Assert: !Equals [!Ref "AWS::Region", us-east-2]
+        AssertDescription: >-
+          Deploy this stack in US East (Ohio), us-east-2. Switch the region in the
+          top-right corner of the console and start again.
+
+Conditions:
+  HasSecondEmail: !Not [!Equals [!Ref SecondBudgetAlertEmail, ""]]
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # Role assumed by the experiment's EC2 nodes.
+  # Object read/write in every S3 bucket (no bucket administration); no EC2
+  # rights.
+  # The SSM permissions are the agent's minimum, deliberately NOT the managed
+  # AmazonSSMManagedInstanceCore, which also grants ssm:GetParameters on "*"
+  # (every Parameter Store value in the account).
+  # ---------------------------------------------------------------------------
+  NodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: vdi-spark-node
+      Description: >-
+        Assumed by the VDI experiment's EC2 nodes. Reads and writes objects in
+        any S3 bucket and runs the SSM agent. No bucket administration, EC2 or
+        Parameter Store access.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: vdi-spark-node-s3
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Object-level read/write everywhere: Spark (s3a) reads and writes,
+              # `aws s3 cp/sync` including S3-to-S3 copies (which also copy object
+              # tags), and pulling build artifacts. Deliberately no bucket-level
+              # administration: nodes can't create or delete buckets or change
+              # bucket policies, ACL settings or public access.
+              - Sid: ListBuckets
+                Effect: Allow
+                Action: [s3:ListAllMyBuckets, s3:GetBucketLocation]
+                Resource: "*"
+              - Sid: ObjectReadWriteInAnyBucket
+                Effect: Allow
+                # Explicit list, not wildcards: s3:PutObject* would also grant
+                # PutObjectAcl and object-lock changes, which nodes never need.
+                Action:
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetObjectTagging
+                  - s3:PutObject
+                  - s3:PutObjectTagging
+                  - s3:DeleteObject
+                  - s3:AbortMultipartUpload
+                  - s3:ListMultipartUploadParts
+                Resource: ["arn:aws:s3:::*", "arn:aws:s3:::*/*"]
+        - PolicyName: vdi-spark-node-ssm-agent
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: SsmAgentSessionAndRunCommandOnly
+                Effect: Allow
+                Action:
+                  - ssm:UpdateInstanceInformation
+                  - ssmmessages:CreateControlChannel
+                  - ssmmessages:CreateDataChannel
+                  - ssmmessages:OpenControlChannel
+                  - ssmmessages:OpenDataChannel
+                  - ec2messages:AcknowledgeMessage
+                  - ec2messages:DeleteMessage
+                  - ec2messages:FailMessage
+                  - ec2messages:GetEndpoint
+                  - ec2messages:GetMessages
+                  - ec2messages:SendReply
+                Resource: "*"
+      Tags:
+        - {Key: project, Value: vdi-spark-scale}
+
+  NodeInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: vdi-spark-node
+      Roles: [!Ref NodeRole]
+
+  # ---------------------------------------------------------------------------
+  # Results bucket. Retained if the stack is deleted: it holds research data.
+  # ---------------------------------------------------------------------------
+  ResultsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "vdi-spark-scale-results-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      Tags:
+        - {Key: project, Value: vdi-spark-scale}
+
+  # ---------------------------------------------------------------------------
+  # Permissions for the IAM user who runs the experiment.
+  #
+  # EC2: everything in us-east-2 (instances of any type, images, volumes, key
+  # pairs, VPCs/subnets/security groups/endpoints/gateways, placement groups),
+  # except purchases that commit money for a year or more, which are explicitly
+  # denied. No tag is required. (Checked 2026-09-26: the account runs no other
+  # EC2 workloads there.) Outside EC2: full S3, passing only the node role, SSM,
+  # read-only billing, and no other IAM powers.
+  # ---------------------------------------------------------------------------
+  OperatorPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: vdi-spark-scale-operator
+      Description: >-
+        All of EC2 in us-east-2 except long-term purchase commitments (any
+        instance type; count is capped by the account's vCPU quotas), pass only
+        the node role, SSH/SSM to instances, full S3 access, cost forecasts,
+        prices and quotas.
+      Users: [!Ref OperatorUserName]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # The cost ceiling for instances is the account's per-family vCPU quotas
+          # (Standard for A/C/D/H/I/M/R/T/Z; GPU and accelerated families have
+          # separate quotas), plus the budget alert below.
+          - Sid: AllOfEc2InOhio
+            Effect: Allow
+            Action: ec2:*
+            Resource: "*"
+            Condition:
+              StringEquals: {aws:RequestedRegion: us-east-2}
+          # Irreversible, long-term spend: never needed for this experiment.
+          - Sid: NoLongTermEc2Commitments
+            Effect: Deny
+            Action:
+              - ec2:PurchaseReservedInstancesOffering
+              - ec2:PurchaseHostReservation
+              - ec2:PurchaseScheduledInstances
+              - ec2:PurchaseCapacityBlock
+            Resource: "*"
+          - Sid: PassOnlyTheNodeRoleToEC2
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !GetAtt NodeRole.Arn
+            Condition:
+              StringEquals: {iam:PassedToService: ec2.amazonaws.com}
+          # AWS-StartSSHSession carries ordinary ssh/scp/rsync (ProxyCommand in
+          # ~/.ssh/config), so nodes need no public IP and no open port 22.
+          - Sid: SessionsAndCommandsOnOhioInstances
+            Effect: Allow
+            Action: [ssm:StartSession, ssm:SendCommand]
+            Resource:
+              - !Sub "arn:aws:ec2:us-east-2:${AWS::AccountId}:instance/*"
+              - !Sub "arn:aws:ssm:us-east-2:${AWS::AccountId}:document/SSM-SessionManagerRunShell"
+              - "arn:aws:ssm:us-east-2::document/AWS-StartSSHSession"
+              - "arn:aws:ssm:us-east-2::document/AWS-RunShellScript"
+              - "arn:aws:ssm:us-east-2::document/AWS-StartPortForwardingSession"
+          - Sid: OwnSessionsOnly
+            Effect: Allow
+            Action: [ssm:TerminateSession, ssm:ResumeSession]
+            Resource: "arn:aws:ssm:*:*:session/${aws:username}-*"
+          - Sid: CommandAndSessionStatus
+            Effect: Allow
+            Action:
+              - ssm:GetCommandInvocation
+              - ssm:ListCommandInvocations
+              - ssm:ListCommands
+              - ssm:DescribeInstanceInformation
+              - ssm:DescribeSessions
+            Resource: "*"
+          # Unrestricted S3 for the operator, by choice, including creating and
+          # deleting buckets. The nodes (NodeRole) get object read/write only.
+          - Sid: FullS3Access
+            Effect: Allow
+            Action: s3:*
+            Resource: "*"
+          # Bills, invoices, budgets and Cost Explorer come from the
+          # BillingReaders group below. This adds what that AWS policy lacks:
+          # cost forecasts, list prices, and the vCPU quota.
+          - Sid: CostForecastPricesAndQuotas
+            Effect: Allow
+            Action:
+              - ce:GetCostForecast
+              - pricing:GetProducts
+              - servicequotas:GetServiceQuota
+              - servicequotas:ListServiceQuotas
+              - servicequotas:RequestServiceQuotaIncrease
+              - servicequotas:ListRequestedServiceQuotaChangeHistory
+            Resource: "*"
+
+  # ---------------------------------------------------------------------------
+  # Read-only billing and cost visibility for the operator: bills, invoices,
+  # budgets and Cost Explorer, via AWS's maintained AWSBillingReadOnlyAccess
+  # (Get/List/Describe/View actions only). A group is used because
+  # CloudFormation cannot attach an AWS managed policy directly to an existing
+  # user.
+  # ---------------------------------------------------------------------------
+  BillingReadersGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: vdi-spark-scale-billing-readers
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSBillingReadOnlyAccess
+
+  OperatorInBillingReaders:
+    Type: AWS::IAM::UserToGroupAddition
+    Properties:
+      GroupName: !Ref BillingReadersGroup
+      Users: [!Ref OperatorUserName]
+
+  # ---------------------------------------------------------------------------
+  # Monthly budget alert on total account spend.
+  # ---------------------------------------------------------------------------
+  MonthlyBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: vdi-spark-scale-monthly
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetUSD
+          Unit: USD
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 50
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref BudgetAlertEmail
+            - !If
+              - HasSecondEmail
+              - SubscriptionType: EMAIL
+                Address: !Ref SecondBudgetAlertEmail
+              - !Ref "AWS::NoValue"
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref BudgetAlertEmail
+            - !If
+              - HasSecondEmail
+              - SubscriptionType: EMAIL
+                Address: !Ref SecondBudgetAlertEmail
+              - !Ref "AWS::NoValue"
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref BudgetAlertEmail
+            - !If
+              - HasSecondEmail
+              - SubscriptionType: EMAIL
+                Address: !Ref SecondBudgetAlertEmail
+              - !Ref "AWS::NoValue"
+
+Outputs:
+  NodeInstanceProfile:
+    Description: Instance profile the experiment's nodes launch with.
+    Value: !Ref NodeInstanceProfile
+  ResultsBucket:
+    Description: Where experiment results are written. Kept if the stack is deleted.
+    Value: !Ref ResultsBucket

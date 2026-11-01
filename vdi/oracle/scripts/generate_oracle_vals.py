@@ -1,5 +1,6 @@
 import numpy as np
 import json
+import os
 import pandas as pd
 from argparse import ArgumentParser
 
@@ -7,22 +8,33 @@ parser = ArgumentParser(description="Generate Values")
 parser.add_argument("distro", choices=["normal", "zipf"], help="Distribution choice")
 parser.add_argument("--num-trials", type=int, default=100, help="number of trials")
 parser.add_argument("--seed", type=int, default=42)
+parser.add_argument("--logs-dir", default="../tpcds_drill_logs",
+                    help="Directory with tpcds_completed.json for the query set in use")
+parser.add_argument("--out-dir", default="../data",
+                    help="Where to write <schema>_query_values_<distro>.csv")
+parser.add_argument("--tpcds-only", action="store_true",
+                    help="Leave TPC-H out of the query set (R2D7 Spark capture)")
+parser.add_argument("--query-set", default=None,
+                    help="JSON list of TPC-DS query numbers to use instead of "
+                         "<logs-dir>/tpcds_completed.json")
 args = parser.parse_args()
+os.makedirs(args.out_dir, exist_ok=True)
 
 tpch_keys = []
 tpcds_keys = []
 
 # infer the current query set
 query_set = []
-with open("../drill_logs/tpch_completed.json") as fp:
-    completed = json.load(fp)
-    q = [("tpch", i) for i in completed]
-    query_set.extend(q)
-    tpch_keys = [f"query_{i}" for i in completed]
+if not args.tpcds_only:
+    with open("../drill_logs/tpch_completed.json") as fp:
+        completed = json.load(fp)
+        q = [("tpch", i) for i in completed]
+        query_set.extend(q)
+        tpch_keys = [f"query_{i}" for i in completed]
 
 len_tpch = len(query_set)
 
-with open("../tpcds_drill_logs/tpcds_completed.json") as fp:
+with open(args.query_set or os.path.join(args.logs_dir, "tpcds_completed.json")) as fp:
     completed = json.load(fp)
     q = [("tpcds", i) for i in completed]
     query_set.extend(q)
@@ -47,13 +59,14 @@ tpcds_vals = samples[len_tpch:]
 print(f"TPC-H Shape: {tpch_vals.shape}, TPC-DS Shape: {tpcds_vals.shape}")
 
 # write resulting samples to file
-df = pd.DataFrame(tpch_vals)
-df["query_id"] = tpch_keys
-df.to_csv(f"../data/tpch_query_values_{args.distro}.csv", index=False)
+if not args.tpcds_only:
+    df = pd.DataFrame(tpch_vals)
+    df["query_id"] = tpch_keys
+    df.to_csv(os.path.join(args.out_dir, f"tpch_query_values_{args.distro}.csv"), index=False)
 
 df = pd.DataFrame(tpcds_vals)
 df["query_id"] = tpcds_keys
-df.to_csv(f"../data/tpcds_query_values_{args.distro}.csv", index=False)
+df.to_csv(os.path.join(args.out_dir, f"tpcds_query_values_{args.distro}.csv"), index=False)
 
 
 

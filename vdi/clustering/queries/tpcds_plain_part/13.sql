@@ -3,7 +3,7 @@ SELECT
   AVG(ss_ext_sales_price) AS avg2,
   AVG(ss_ext_wholesale_cost) AS avg3,
   SUM(ss_ext_wholesale_cost)
-FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store, READ_PARQUET('/home/cc/tpcds_cluster_base/customer_demographics/*.parquet') AS customer_demographics, READ_PARQUET('/home/cc/tpcds_cluster_rand/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/customer_address/*.parquet') AS customer_address, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS date_dim
+FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store, READ_PARQUET('/home/cc/tpcds_cluster_base/customer_demographics/*.parquet') AS customer_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/customer_address/*.parquet') AS customer_address, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS date_dim
 WHERE
   s_store_sk = ss_store_sk
   AND ss_sold_date_sk = d_date_sk

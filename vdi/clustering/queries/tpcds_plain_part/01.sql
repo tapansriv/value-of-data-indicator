@@ -3,7 +3,7 @@ WITH customer_total_return AS (
       sr_customer_sk AS ctr_customer_sk,
       sr_store_sk AS ctr_store_sk,
       SUM(sr_return_amt) AS ctr_total_return
-    FROM READ_PARQUET('/home/cc/tpcds_cluster_rand/store_returns/*.parquet') AS store_returns, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS date_dim
+    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_returns/*.parquet') AS store_returns, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS date_dim
     WHERE
       sr_returned_date_sk = d_date_sk AND d_year = 2000
     GROUP BY

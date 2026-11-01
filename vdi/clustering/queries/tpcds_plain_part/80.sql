@@ -5,7 +5,7 @@ WITH ssr AS (
       SUM(COALESCE(sr_return_amt, 0)) AS returns_,
       SUM(ss_net_profit - COALESCE(sr_net_loss, 0)) AS profit
     FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales
-    LEFT OUTER JOIN READ_PARQUET('/home/cc/tpcds_cluster_rand/store_returns/*.parquet') AS store_returns
+    LEFT OUTER JOIN READ_PARQUET('/home/cc/tpcds_cluster_base/store_returns/*.parquet') AS store_returns
       ON (
         ss_item_sk = sr_item_sk AND ss_ticket_number = sr_ticket_number
       ), READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS date_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store, READ_PARQUET('/home/cc/tpcds_cluster_base/item/*.parquet') AS item, READ_PARQUET('/home/cc/tpcds_cluster_base/promotion/*.parquet') AS promotion

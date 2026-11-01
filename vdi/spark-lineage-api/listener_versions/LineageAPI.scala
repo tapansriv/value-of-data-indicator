@@ -34,7 +34,9 @@ object LineageAPI {
     val start = System.nanoTime()
     val spark = SparkSession.builder()
       .appName("LineageAPI")
-      .master("local[*]")
+      // Master intentionally unset: governed by --master on spark-submit, so the
+      // same jar runs single-node (spark-submit defaults to local[*]) or against a
+      // standalone cluster. Setting it here silently overrides --master.
       .config(s"spark.sql.catalog.$catalogName", "org.apache.iceberg.spark.SparkCatalog")
       .config(s"spark.sql.catalog.$catalogName.type", "hadoop")
       .config(s"spark.sql.catalog.$catalogName.warehouse", "file:///tmp/iceberg/warehouse")

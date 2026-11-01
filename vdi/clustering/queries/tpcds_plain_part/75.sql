@@ -41,7 +41,7 @@ WITH all_sales AS (
           ON i_item_sk = ss_item_sk
         JOIN READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS date_dim
           ON d_date_sk = ss_sold_date_sk
-        LEFT JOIN READ_PARQUET('/home/cc/tpcds_cluster_rand/store_returns/*.parquet') AS store_returns
+        LEFT JOIN READ_PARQUET('/home/cc/tpcds_cluster_base/store_returns/*.parquet') AS store_returns
           ON (
             ss_ticket_number = sr_ticket_number AND ss_item_sk = sr_item_sk
           )

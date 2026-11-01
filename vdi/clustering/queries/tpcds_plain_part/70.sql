@@ -66,10 +66,7 @@ SELECT
   s_state,
   s_county,
   lochierarchy,
-  RANK() OVER (
-    PARTITION BY lochierarchy, CASE WHEN g_county = 0 THEN s_state END
-    ORDER BY total_sum DESC
-  ) AS rank_within_parent
+  RANK() OVER (PARTITION BY lochierarchy, CASE WHEN g_county = 0 THEN s_state END ORDER BY total_sum DESC) AS rank_within_parent
 FROM results_rollup
 ORDER BY
   lochierarchy DESC,

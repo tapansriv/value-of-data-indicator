@@ -3,6 +3,7 @@ import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, Spark
 import org.apache.spark.sql.execution.datasources.parquet.RowGroupMetricsRegistry
 import org.apache.spark.sql.util.QueryExecutionListener
 
+import org.apache.hadoop.fs.Path
 import java.time.Instant
 import java.sql.Timestamp
 import java.io.{BufferedWriter, File, FileWriter}
@@ -11,8 +12,7 @@ import org.apache.log4j.Logger
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 
-import java.util.concurrent.CountDownLatch
-import java.util.regex.Pattern
+import java.util.concurrent.{CountDownLatch, TimeUnit}
 import scala.language.postfixOps
 import scala.util.Using
 
@@ -24,9 +24,19 @@ object LineageAPI {
   // is serving continuous requests using a different synchronization barrier system.
   // This is to ensure main thread waits until all listeners have completed before flushing logs and exiting
   val NUM_QUERIES_EXECUTING: Int = 1
+  // The only event a collector may act on is its own query's: show() reaches the listener
+  // as action "head" (Dataset.show -> take -> head). The usage-log write inside onSuccess is
+  // itself a Spark job and fires its own event ("command"); acted on, it released the NEXT
+  // query's latch early and, for the last query, lost its rows to a stopped context
+  // (found in Phase E: the second query of a run logged no row groups).
+  val QUERY_ACTION: String = "head"
+  // Upper bound on the post-query wait for the listener (not on the query itself, which
+  // has already returned). 30 min pending a measured listener time from Phase E.
+  val LISTENER_TIMEOUT_MIN: Long = 30
 
   def listFiles(dir: String): Array[String] = {
-    new File(dir).listFiles().map(_.getAbsolutePath)
+    // Sorted and .sql-only so query order is deterministic (listFiles has no defined order)
+    new File(dir).listFiles().map(_.getAbsolutePath).filter(_.endsWith(".sql")).sorted
   }
 
   private def appendToCsv(filePath: String, headers: Seq[String], row: Seq[Any]): Unit = {
@@ -60,14 +70,16 @@ object LineageAPI {
     val isTpch: Boolean = sourcePath.contains("tpch")
     val dataset = if (isTpch) "tpch" else "tpcds"
     val queryList = listFiles(queryDir)
-    val headers = Seq("query", "dataset", "runtime")
+    val headers = Seq("query", "dataset", "runtime", "listener_timeout")
     val outfile = "spark_internal_listener_rowgroup_results.csv"
     val queryStartedFile = "spark_rowgroup_queries_started.csv"
 
 
     val spark = SparkSession.builder()
       .appName("LineageAPI")
-      .master("local[*]")
+      // Master intentionally unset: governed by --master on spark-submit, so the
+      // same jar runs single-node (spark-submit defaults to local[*]) or against a
+      // standalone cluster. Setting it here silently overrides --master.
       .config(s"spark.sql.catalog.$catalogName", "org.apache.iceberg.spark.SparkCatalog")
       .config(s"spark.sql.catalog.$catalogName.type", "hadoop")
       .config(s"spark.sql.catalog.$catalogName.warehouse", "file:///tmp/iceberg/warehouse")
@@ -113,14 +125,19 @@ object LineageAPI {
           val endTime = System.currentTimeMillis()
 
           // Wait until query listener is completed before stopping the spark instance
-          queryLatch.await()
+          // Bounded wait, flag-and-continue: a dropped listener event must not hang the
+          // run. On timeout the row is flagged and the run moves on; treat this query and
+          // the next one as suspect for this rep.
+          val listenerTimedOut = !queryLatch.await(LISTENER_TIMEOUT_MIN, TimeUnit.MINUTES)
+          if (listenerTimedOut)
+            println(s"WARNING: listener did not finish within $LISTENER_TIMEOUT_MIN min for $queryName; continuing")
           val runtime = endTime - startTime
-          val data = Seq(queryName, dataset, runtime)
+          val data = Seq(queryName, dataset, runtime, listenerTimedOut)
           appendToCsv(outfile, headers, data)
         } catch {
           case e: Exception =>
             println(s"Query failed: ${e.getMessage}")
-            val data = Seq(queryName, dataset, -1)
+            val data = Seq(queryName, dataset, -1, false)
             appendToCsv(outfile, headers, data)
         } finally {
           spark.listenerManager.unregister(usageCollector)
@@ -132,38 +149,54 @@ object LineageAPI {
 
   // Load data and register as views or tables
   def loadData(spark: SparkSession, sourceType: String, path: String, catalogName: String): Unit = {
-    val dir = new File(path)
+    // Data is enumerated through the Hadoop FileSystem API rather than java.io.File so
+    // that the same code works against hdfs:// and s3a:// as well as local paths.
+    // java.io.File cannot see a distributed filesystem: listFiles() returns null for an
+    // hdfs:// path, which would register no tables at all and leave every query failing
+    // with an unrelated "table not found".
+    val root = new Path(path)
+    val fs = root.getFileSystem(spark.sparkContext.hadoopConfiguration)
+
+    if (!fs.exists(root)) {
+      println(s"sourcePath does not exist: $path")
+      sys.exit(1)
+    }
+    val isDir = fs.getFileStatus(root).isDirectory
+
+    // Paths from listStatus are fully qualified (scheme://authority/path), so executors
+    // resolve exactly what the driver enumerated instead of relying on fs.defaultFS.
+    // Sorted for deterministic registration order across runs.
+    def childrenWithSuffix(suffix: String): Array[Path] =
+      fs.listStatus(root)
+        .filter(st => st.isFile && st.getPath.getName.endsWith(suffix))
+        .map(_.getPath)
+        .sortBy(_.toString)
 
     if (sourceType == "iceberg") {
-      if (!dir.isDirectory) {
+      if (!isDir) {
         println(s"Iceberg sourcePath must be a directory of Parquet files. Found: $path")
         sys.exit(1)
       }
-      val files = dir.listFiles().filter(_.getName.endsWith(".parquet"))
-      files.foreach { file =>
-        val tableName = file.getName.stripSuffix(".parquet")
+      childrenWithSuffix(".parquet").foreach { p =>
+        val tableName = p.getName.stripSuffix(".parquet")
         val icebergTable = s"$catalogName.default.$tableName"
-        val df = spark.read.parquet(file.getAbsolutePath)
+        val df = spark.read.parquet(p.toString)
         df.writeTo(icebergTable).using("iceberg").createOrReplace()
       }
-    } else if (dir.isDirectory) {
-      val files = dir.listFiles().filter(f =>
-        f.isFile && ((sourceType == "csv" && f.getName.endsWith(".csv")) ||
-                     (sourceType == "parquet" && f.getName.endsWith(".parquet")))
-      )
-      files.foreach { file =>
-        val viewName = file.getName.stripSuffix(s".$sourceType")
+    } else if (isDir) {
+      childrenWithSuffix(s".$sourceType").foreach { p =>
+        val viewName = p.getName.stripSuffix(s".$sourceType")
         val df = sourceType match {
-          case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(file.getAbsolutePath)
-          case "parquet" => spark.read.parquet(file.getAbsolutePath)
+          case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(p.toString)
+          case "parquet" => spark.read.parquet(p.toString)
         }
         df.createOrReplaceTempView(viewName)
       }
     } else {
-      val viewName = new File(path).getName.stripSuffix(s".$sourceType")
+      val viewName = root.getName.stripSuffix(s".$sourceType")
       val df = sourceType match {
-        case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(path)
-        case "parquet" => spark.read.parquet(path)
+        case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(root.toString)
+        case "parquet" => spark.read.parquet(root.toString)
       }
       df.createOrReplaceTempView(viewName)
     }
@@ -178,12 +211,17 @@ object LineageAPI {
                        usageTablePath: String)
                       (implicit spark: SparkSession) extends QueryExecutionListener {
 
-    private val regex_prefix = {
-      val absPath = new File(dataPath).getAbsolutePath
-      Pattern.quote(s"file://$absPath/")
-    }
-
-    private val regex_extension = """\.parquet"""
+    // The table name is the file's basename minus the .parquet extension: loadData
+    // registers exactly one temp view per file under that same name, so the two must
+    // agree. Deriving it from the basename is correct under any URI scheme.
+    //
+    // The previous version split the path on a literal "file://" + absolute-path prefix.
+    // Under hdfs:// (or any other scheme, or a differently-slashed file: URI) the split
+    // finds no match and the following (1) throws ArrayIndexOutOfBoundsException, which
+    // onSuccess's caller reports as a generic query failure -- silent loss of all
+    // row-group lineage rather than a visible error.
+    private def tableNameOf(filePath: String): String =
+      new Path(filePath).getName.stripSuffix(".parquet")
 
     type LogType = (String, // table name
                     String, // column name
@@ -227,6 +265,7 @@ object LineageAPI {
     }
 
     override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = {
+      if (funcName != QUERY_ACTION) return
       // metadata to add to time-series
       val logsBuffer = ListBuffer[(String, String, Long, Long, String, Timestamp, Double)]()
 
@@ -240,14 +279,20 @@ object LineageAPI {
             case None => return
           }
 
-          // extract the (file, rgs) pairs from the accumulator
-          val rowGroupsForQuery = RowGroupMetricsRegistry.get(execId).map(_.value).get
-          rowGroupsForQuery.iterator.foreach { e =>
-            val (filePath, rg_info) = e
-            val tbl = filePath.split(regex_prefix)(1).split(regex_extension)(0)
-            rg_info.foreach { info =>
-              val (_, offset, size) = info
-              logsBuffer.addOne(tbl, null, offset, size, dataTaskId, timestamp, 1.0)
+          // extract the (file, rgs) pairs from every scan's accumulator: one per Parquet
+          // scan, so a join has several (RowGroupMetricsRegistry.getAll; get() returned only
+          // the last scan's). A table scanned twice in one query (Q2, Q21) is logged once per
+          // row group.
+          val seen = scala.collection.mutable.HashSet.empty[(String, Long, Long)]
+          RowGroupMetricsRegistry.getAll(execId).foreach { acc =>
+            acc.value.iterator.foreach { e =>
+              val (filePath, rg_info) = e
+              val tbl = tableNameOf(filePath)
+              rg_info.foreach { info =>
+                val (_, offset, size) = info
+                if (seen.add((filePath, offset, size)))
+                  logsBuffer.addOne(tbl, null, offset, size, dataTaskId, timestamp, 1.0)
+              }
             }
           }
           // logger.info(rowGroupsForQuery)
@@ -289,6 +334,7 @@ object LineageAPI {
     }
 
     override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit = {
+      if (funcName != QUERY_ACTION) return
       try {
         println(s"Query failed: ${exception.getMessage}")
         if (useRowGroups) {
@@ -297,8 +343,7 @@ object LineageAPI {
             case None => return
           }
 
-          if (RowGroupMetricsRegistry.get(execId).isDefined)
-            RowGroupMetricsRegistry.remove(execId)
+          RowGroupMetricsRegistry.remove(execId)
         }
       } finally {
         queryLatch.countDown()

@@ -1,0 +1,1703 @@
+diff --git a/REVISION_SCALEUP.md b/REVISION_SCALEUP.md
+index 3be99d2..f61feb2 100644
+--- a/REVISION_SCALEUP.md
++++ b/REVISION_SCALEUP.md
+@@ -38,12 +38,12 @@ Two constraints that are *not* about ordering:
+    placement config on a subset of a single 16-node reservation.
+ 2. **Data staging does not transfer.** Overhead runs TPC-H 1TB; sorting and
+    placement run TPC-DS (`clustering/queries/tpcds*`, `partitioning/queries/tpcds*`).
+-   A live cluster is not a staged cluster. Settle the disk/HDFS layout for **both**
+-   datasets up front.
++   A live cluster is not a staged cluster. Settle the bucket/prefix layout for **both**
++   datasets up front (§4).
+ 
+-**Where the order does cost something:** six variants x 22-38 queries x 3 reps x
+-two node counts at 1TB is plausibly the largest cluster-hour consumer of the three
+-experiments. Under a fixed (non-renewable) reservation window, putting it first
++**Where the order does cost something:** seven configurations x 22-38 queries x
++3 reps x four node counts at 1TB is plausibly the largest cluster-hour consumer of
++the three experiments, and reruns of 1 and 4 (below) doubled the node-count axis. Under a fixed (non-renewable) reservation window, putting it first
+ means the R3W1 answer waits behind the longest job. Under a renewable reservation,
+ overhead-first is the better order.
+ 
+@@ -92,15 +92,44 @@ single-node behaviour is unchanged.
+ `src/main/scala/LineageAPI.scala` still contains the line and was deliberately left
+ alone — `compile.sh` overwrites it from `listener_versions_new/` on every build.
+ 
+-### 1.3 The 4-node data point is not in this working copy
+-
+-`vod_paper2/vdi_figures/new/tpch_node4_1tb.pdf` is referenced at
+-`evaluation.tex:558`, but `benchmarking/data/all_results.csv` contains only
+-`single_node_mod_spark` and `unmod_spark`, there is no 4-node CSV in
+-`benchmarking/data/`, and no generating script.
+-
+-**Locate the 4-node raw results and harness config before running 8/16**, or the
+-new points are not comparable to the existing trend.
++### 1.3 The 4-node data point lives on the `cluster` branch — found
++
++Superseded an earlier reading of this file that said the 4-node data was missing.
++It is absent from `main` and present on `cluster`, which is why it looked lost.
++Full inventory: `spark-lineage-api/benchmarking/data/MANIFEST.md` (and
++`inventory.csv` beside it), generated 2026-09-13.
++
++- **Generating script:** `origin/cluster:spark-lineage-api/benchmarking/scripts/plot_spark_internal_tpch.py:123`
++  writes `figs/tpch_node4_1tb.pdf`. That string appears in no other branch.
++- **Raw inputs:** the top-level `spark_internal_listener_{vanilla,bare,cols,rowgroup}_results.csv`
++  on `cluster`. `nowrite` and `register` share the same run, so **all six variants**
++  are available, not only the four the script plots.
++- **Shape:** 74 TPC-H rows per variant = 37 queries x 2 reps, queries 1-22 all
++  present; data path `/mnt/tpch_1tb/data`. Written in one clean run
++  (`fa422157`, 2025-11-16, "finished tpch on cluster") and byte-frozen since.
++
++**Unresolved: no committed file records the node count.** Only `cluster` scripts
++pass `--master spark://controller:7077`, so it is unambiguously the distributed
++branch, but "4 nodes" rests on the commit subjects and the figure filename, and
++those commits landed two months after the CSVs and touched only the PDF and the
++plot script. **Confirm against the Chameleon reservation record before citing the
++number in the paper.** If it cannot be confirmed, the 4-node rerun settles it.
++
++### 1.4 The gap that matters most: no unmodified-Spark baseline at 4 nodes
++
++Single-node has a clean pair — `single_node_mod_spark` and `unmod_spark`. The
++4-node run has all six listener variants but **only on the instrumented build**.
++
++That matters because `vanilla` and `unmod_spark` measure different things:
++`vanilla` is the *instrumented* Spark with no listener registered, isolating
++listener cost; `unmod_spark` is stock Spark 3.5.5, isolating the cost of the
++instrumented engine itself. Without the second, the 4-node data can show listener
++overhead but not what carrying the fork costs at scale — which is closer to what
++R2D14 / R3W1 / R3D1 are actually asking.
++
++**Consequence for the run matrix:** every node count needs **seven**
++configurations, not six — the six listener variants on the custom build plus a
++stock-Spark baseline. See Phase F.
+ 
+ ---
+ 
+@@ -109,15 +138,47 @@ new points are not comparable to the existing trend.
+ | # | Change | Where | Status |
+ |---|---|---|---|
+ | A1 | Remove hardcoded `.master("local[*]")` | 13 sites, both listener dirs | **done** |
+-| A2 | `loadData` enumerates with `java.io.File.listFiles` — driver-local POSIX only | `LineageAPI*.scala`, `loadData` | blocked on Phase C |
+-| A3 | `regex_prefix` hardcodes `file://` + absolute path | `LineageAPI_rgs.scala`, `UsageCollector` | blocked on Phase C |
+-| A4 | Usage sink `write.parquet("/mnt/logs/usage_logs")` — executors write, needs shared FS | listener + run scripts | blocked on Phase C |
++| A2 | `loadData` enumerated with `java.io.File.listFiles` — driver-local POSIX only; now uses the Hadoop `FileSystem` API | 6 files in `listener_versions_new/` | **done** |
++| A3 | `regex_prefix` hardcoded `file://` + absolute path; table name now derived from the basename | `LineageAPI_rgs.scala`, `UsageCollector` | **done** |
++| A4 | Usage sink path | run scripts + Iceberg warehouse config | **config only**, see below |
+ | A5 | Add `--executor-memory` / `--executor-cores` / `--num-executors`; today only `--driver-memory 50g` is set | `run_test_tpch.sh`, `test_tpch_split_*.sh` | todo |
+ | A6 | Pin `spark.speculation=false` | run scripts | todo |
+ 
+-**On A3:** if data moves to HDFS, `filePath.split(regex_prefix)(1)` throws
+-`ArrayIndexOutOfBoundsException`, which the harness swallows as a generic
+-"Query failed". Table names would silently stop resolving. Make it scheme-agnostic.
++**On A2/A3 (applied 2026-09-13).** `loadData` now resolves the source through
++`new Path(path).getFileSystem(spark.sparkContext.hadoopConfiguration)` and enumerates
++with `fs.listStatus`, yielding fully-qualified URIs so executors resolve exactly what
++the driver enumerated rather than relying on `fs.defaultFS`. Listing is sorted for
++deterministic registration order. The query-file listing stays on `java.io.File` —
++query files are local to the driver, only the data moved.
++
++A3 replaced the regex with `new Path(filePath).getName.stripSuffix(".parquet")`.
++This is not merely scheme-portability: the old prefix was built as
++`"file://" + absolutePath`, so it was also sensitive to how Hadoop happens to qualify
++a local URI (`file:/x` vs `file:///x`). Any mismatch makes `.split(prefix)(1)` throw
++`ArrayIndexOutOfBoundsException`, which `onSuccess`'s caller reports as a generic
++"Query failed" — silent loss of all row-group lineage rather than a visible error.
++The basename is also what `loadData` registers each temp view as, so the two now
++agree by construction. Assumes the flat one-file-per-table layout `loadData` requires.
++
++All six variants compile against the custom Spark in the local `~/.m2`
++(`mvn compile`, Java 17, Scala 2.13). `org.apache.hadoop.fs.Path` resolves
++transitively through the `provided` `spark-sql_2.13` dependency, so `pom.xml` needed
++no change.
++
++**On A4:** less work than first thought. `usageDF.write.mode("append").parquet(path)`
++already goes through the Hadoop FS API and accepts an `hdfs://` path with no code
++change. What needs changing is the *argument* in the run scripts and the Iceberg
++warehouse config, still pinned at `file:///tmp/iceberg/warehouse` in every variant.
++
++**Decide deliberately:** written to S3 the listener's log write crosses the network and
++becomes part of the overhead being measured. That is arguably more honest than writing
++to node-local disk, but it changes what the `nowrite`-vs-`cols` gap means — and it is
++the component most likely to be masked at high node counts (§4.3). Whichever way, state
++it in §6.
++
++**Not done — `QueryRunner.scala`** still uses `java.io.File` for data discovery. It is
++not built by `compile.sh` and not on the benchmark path, so it was left alone; it will
++not work against `hdfs://` or `s3a://` if anyone revives it.
+ 
+ **On A6:** speculative re-execution of a task double-counts into the accumulator,
+ inflating row-group counts. Speculation is off by default, but pin it explicitly —
+@@ -152,20 +213,144 @@ instrumentation is absent and every variant collapses onto vanilla.
+ then rsync the distribution tarball, `~/.m2/repository/org/apache/parquet`, and the
+ six listener JARs to the remaining nodes. Do not build 16 times.
+ 
+-## 4. Phase C — Storage decision
+-
+-Data currently sits at `/mnt/tpch_1tb/data` on one node's local disk. For N nodes:
+-HDFS, NFS, replicate-to-all, or S3.
++## 4. Phase C — Storage: S3 on EC2 *(decided 2026-09-26)*
+ 
+-**Recommendation: HDFS across the nodes' 1.8TB disks.** It scales with node count,
+-gives data locality, and matches what a real Spark deployment looks like. Budget
+-1TB x replication factor.
++**Object storage (S3) read directly by an EC2 Spark cluster.** HDFS is retained as a
++documented fallback, hydrated from S3 at cluster start, triggered only by the §6
++measurement below.
+ 
+-**Confound to decide now:** the existing 1- and 4-node points used node-local disk.
+-If 8/16 run on HDFS, the trend R2D16 asks about mixes a storage change with node
+-count. Either rerun 1 and 4 on HDFS, or state the caveat explicitly in §6.
++This supersedes an earlier decision in this file for HDFS on Chameleon bare metal.
++That decision rested on two arguments — S3 egress cost and data locality — both of
++which are on-prem arguments that do not survive the move to EC2: in-region S3<->EC2
++transfer is free, and a large instance's network bandwidth is in the same league as
++its local NVMe.
+ 
+-A2, A3, and A4 all fall out of this decision — make it before writing that code.
++| Option | At 16 nodes | |
++|---|---|---|
++| NFS from one node | single server saturates; measures the NFS box, not the listener | disqualifying |
++| Replicate 1TB per node | perfect locality, keeps `file://`, but 16 stagings and an unrealistic deployment | rejected |
++| HDFS co-located on compute | bandwidth scales with node count, but *storage changes along the measured axis* | fallback only |
++| **S3 read directly** | storage layer identical at every node count; durable across teardown | **chosen** |
++
++The methodological fact underneath all of this: **the slower the storage, the smaller
++the measured listener overhead appears**, because an I/O-bound scan hides listener CPU
++in I/O wait. That does not disqualify S3 — it determines what has to be said about the
++result (§4.2, §4.3).
++
++Setup, on EC2:
++
++- **`hadoop-aws` 3.3.4**, matching `hadoop.version` in the Spark fork's `pom.xml`,
++  with the AWS SDK bundle version that POM pins. Mismatch here fails at runtime as
++  `NoSuchMethodError`, not at build time.
++- **`fs.s3a.experimental.input.fadvise=random`** — required for Parquet. The sequential
++  default over-reads badly on columnar range requests.
++- **Raise `fs.s3a.connection.maximum`** (default 96) and `fs.s3a.threads.max` together;
++  at 16 nodes the default exhausts and surfaces as a hang, not an error.
++- **IAM instance profile**, not static keys — EC2 has an instance metadata service, so
++  nothing needs distributing to 16 nodes.
++- **S3 gateway VPC endpoint**: traffic stays inside the VPC, no NAT charges, no internet
++  path.
++- Spread keys across prefixes to stay under the per-prefix request ceiling.
++
++Security posture comes largely free from the network design: put workers in a
++**private subnet with no public IPs** and reach them via SSM rather than inbound SSH.
++This matters because an exposed Spark standalone master on 7077 is unauthenticated
++remote code execution and is actively scanned for. Do **not** mitigate with
++`spark.authenticate` / `spark.network.crypto.enabled` — both add per-connection and
++per-byte overhead that would contaminate the very deltas being measured, unevenly
++across node counts as shuffle volume grows.
++
++### 4.1 Why S3 over HDFS on EC2
++
++- **Teardown economics.** On instance storage the data dies with the instances, and
++  16 nodes idling is roughly $44/hr (~$1,000/day) to keep it alive. So you terminate
++  between sessions and re-stage 1TB at every bring-up. In S3 the data persists at
++  ~$23/month and the cluster is disposable.
++- **It decouples storage from the measured axis.** With HDFS co-located on compute,
++  going 1 -> 4 -> 8 -> 16 changes the storage system *at the same time* as the
++  compute. With S3 the storage layer is byte-identical at every node count and only
++  parallelism varies.
++- **It closes the prototype gap more completely.** R2D14 / R3W1 / R3D1 are complaints
++  about prototype-vs-evaluation mismatch. The prototype is Spark/Databricks + Unity
++  Catalog, which reads object storage. HDFS leaves a residual version of the same
++  objection.
++- **One staging serves all three experiments.** Placement explicitly wants an
++  S3 + local-cache hierarchy (`REVISION_EXPERIMENTS.md` §3.2), so §6 gets one storage
++  story instead of two.
++- **Reproducible for artifact evaluation.** A bucket is something a reviewer can point
++  at; a torn-down HDFS cluster is not.
++- Less setup: no namenode, no formatting, no `dfs.datanode.data.dir` on the right
++  disks, no re-balancing at each cluster size.
++
++### 4.2 The one thing HDFS wins, and why it is not disqualifying
++
++HDFS co-scaled with compute keeps the cluster **compute-bound at every node count**,
++because aggregate read bandwidth grows with N. With S3 the endpoint bandwidth is fixed
++while demand grows, so at 16 nodes the scan may become I/O-bound where at 1 node it
++never was — and listener CPU then hides in I/O wait.
++
++That is a real effect, but it is **in scope rather than a confound**: blob storage plus
++elastic compute is the common deployment, so measuring in that regime is measuring the
++deployment people actually run. The requirement it creates is disclosure, not
++avoidance — see §4.3.
++
++Other S3 quirks are manageable. GET request cost is negligible at this volume.
++`fs.s3a.experimental.input.fadvise=random` matters for read amplification but does not
++corrupt the row-group accumulator, which records the row groups the *filter selected*,
++not bytes fetched from storage. Also needed: `hadoop-aws` at 3.3.4 with a version-matched
++AWS SDK bundle, a raised `fs.s3a.connection.maximum` (default 96 is low for 16 nodes),
++and keys spread across prefixes to stay under per-prefix request limits.
++
++### 4.3 Pre-registered hypothesis: overhead decreases as the cluster grows
++
++Stated **before the runs**, following the "predict the direction before running"
++convention in `REVISION_EXPERIMENTS.md` §2. This matters more than usual because the
++predicted result *flatters* VDI; a pre-registered prediction plus absolute numbers is
++what makes it defensible rather than post-hoc.
++
++**Hypothesis:** relative listener overhead falls as node count rises. Answering R2D16
++("does the Figure 13/14 trend continue?") with "it continues, and overhead becomes less
++significant at scale" is the expected outcome.
++
++**Two mechanisms produce that same downward curve, and they mean different things:**
++
++| | Mechanism | What it says |
++|---|---|---|
++| **Amortization** | listener cost is largely per-query and driver-side — plan walk, accumulator merge, log write — so a roughly fixed cost is a smaller fraction of a larger total | a genuine scaling property **of the VDI design**; ours to claim |
++| **Masking** | listener CPU disappears into I/O wait because the cluster is storage-bound | a property **of S3**; not ours to claim |
++
++Both must be addressed in the §6 discussion when describing why overhead decreases.
++They are separable with data already being collected:
++
++1. **Report absolute overhead (ms) alongside relative (%).** The cheapest and most
++   decisive step. Flat absolute per-query listener cost with a falling percentage is
++   amortization, unambiguously. A reviewer shown only percentages cannot tell the two
++   apart and will reasonably suspect masking.
++2. **`executorCpuTime` vs `executorRunTime`** per stage, from Spark's own task metrics.
++   A declining CPU-to-runtime ratio as N grows means the cluster is becoming I/O-bound
++   and masking is in play; a flat ratio means it is not.
++3. **The variant ladder** (`register` -> `bare` -> `nowrite` -> `cols` -> `rowgroup`)
++   already decomposes where listener cost sits. If the write-bearing variants converge
++   toward `nowrite` at 16 nodes, the log write specifically is being masked.
++
++**Honest framing for §6:** state that overhead declines with scale, give the absolute
++figures showing listener cost is roughly constant per query, and say explicitly that
++part of the relative decline reflects the cluster becoming storage-bound at high node
++counts — which is itself representative of production object-store deployments. Do not
++claim the decline is purely an amortization property unless (2) shows a flat CPU ratio.
++
++### 4.4 If HDFS is needed after all
++
++Hydrate HDFS from S3 at cluster start as a run-time cache layer — roughly 15 minutes of
++bring-up at 10 Gbps aggregate, paid per session rather than per experiment. Trigger is
++the §6 check, not preference. Settings if used: Hadoop 3.3.4 (matching `hadoop.version`
++in the Spark fork's `pom.xml`), `dfs.replication=2` uniform across node counts
++(at N=1 the block stays under-replicated — `fsck` warns, reads unaffected; record it
++rather than special-casing RF=1), and `dfs.datanode.data.dir` pointed at the instance
++NVMe rather than the root volume.
++
++**S3 is the durable copy either way**, since it is the only thing that survives cluster
++teardown.
+ 
+ ## 5. Phase D — Data
+ 
+@@ -186,10 +371,30 @@ If they do not match, capture is broken distributed and every 1TB number afterwa
+ is invalid while looking entirely plausible. This costs minutes and guards the whole
+ reservation. Under the overhead-first ordering it is not optional.
+ 
++**Second check — is the scan I/O-bound?** Run one query at 1 node and at 16 on S3 and
++compare `executorCpuTime / executorRunTime` per stage, plus any S3A throttling the
++client reports. This decides §4.2/§4.3:
++
++- **Flat ratio** -> compute-bound at 16; S3 direct is correct and the overhead trend is
++  amortization.
++- **Declining ratio** -> becoming I/O-bound at high node counts. Not a reason to abort:
++  it is the representative production regime (§4.2). It *is* a reason to (a) say so
++  explicitly in the §6 discussion and (b) consider the §4.4 HDFS hydration as a
++  cross-check at 16 nodes so the paper can separate the two mechanisms.
++
++Either way, record the ratio — it is the evidence behind the §6 sentence, and it costs
++one extra query at two cluster sizes.
++
+ ## 7. Phase F — The run
+ 
+-Matrix: 6 variants x queries x 3 reps (`INSTRUCTIONS.md` suggests starting at 3) x
+-{8, 16} nodes. Run under `tmux -CC` per `TMUX.md`.
++Matrix: **7 configurations** (6 listener variants on the custom build + a stock
++Spark 3.5.5 baseline, per §1.4) x queries x 3 reps (`INSTRUCTIONS.md` suggests
++starting at 3) x **{1, 4, 8, 16} nodes**. Run under `tmux -CC` per `TMUX.md`.
++
++1 and 4 are rerun rather than reused. Two reasons: the existing 4-node run has no
++stock-Spark arm and only 2 reps (§1.4), and rerunning every node count against the same
++S3 bucket puts all four points on one identical storage layer rather than comparing old
++local-disk runs against new ones (§4).
+ 
+ **Timing-harness decision.** `run_test_tpch.sh` wraps each `spark-submit` in
+ `/usr/bin/time`, so every measurement includes JVM startup and executor acquisition.
+@@ -207,11 +412,17 @@ and of the usage log filling the disk — put the log on its own disk.
+ 
+ ## 8. Phase G — Analysis
+ 
+-- Append `8_node_mod_spark` / `16_node_mod_spark` rows to
++- Append `{1,4,8,16}_node_mod_spark` and matching stock-Spark rows to
+   `benchmarking/data/all_results.csv` (schema: `query, dataset, runtime, variant,
+-  configuration`).
++  configuration`). Watch the mixed-width-row defect documented in `MANIFEST.md` —
++  a naive `pd.read_csv` silently shifts those rows.
+ - Generalize `benchmarking/scripts/plot_tpch_single_node.py` into a 1/4/8/16 trend
+   plot.
++- **Report absolute overhead (ms) and relative overhead (%) together**, per §4.3. A
++  percentage-only figure cannot distinguish amortization from masking and invites
++  exactly the objection R2D16 is probing.
++- Record the `executorCpuTime / executorRunTime` ratio per node count alongside the
++  results — it is the evidence for whichever §6 explanation is given.
+ - Write the per-experiment results note required by `REVISION_EXPERIMENTS.md` §5:
+   the numbers, the review item they answer, and the sentence or two they justify.
+ - Tag the resulting prose `\update{R2D16}{...}` at the moment it is written.
+@@ -222,10 +433,27 @@ and of the usage log filling the disk — put the log on its own disk.
+ 
+ - [ ] **Query set.** `benchmarking/tpch_queries_spark/` holds 38 files — 22 standard
+       TPC-H plus extras from `extra_queries/`. Which set is "the entirety of TPC-H"?
+-- [ ] **Storage** (Phase C) — HDFS vs. node-local replication. Gates A2/A3/A4.
++- [x] **Storage** — S3 read directly from an EC2 cluster; HDFS hydration is a
++      measurement-triggered fallback. Decided 2026-09-26, superseding the 2026-09-13
++      HDFS-on-Chameleon decision; see §4.
++- [ ] **Usage-log write path** — to S3 (counted as listener overhead, crossing the
++      network) or node-local (held constant outside it)? Changes what the
++      `nowrite`-vs-`cols` gap means, and interacts with the masking question in §4.3.
++- [ ] **Platform: EC2 vs Chameleon.** S3-direct assumes EC2. If Chameleon is used
++      instead, substitute its S3-compatible endpoint or MinIO, and apply the network
++      hardening checklist (bind daemons to the private interface, default-deny inbound,
++      one gateway node with the floating IP, never expose 7077/8080/8081/4040/8088/9870).
++      Spark-level `spark.authenticate` / `network.crypto` would add measurable overhead
++      and must not be used as the mitigation — it would contaminate the deltas.
+ - [ ] **Compute.** Chameleon project membership is still unresolved (account and
+       email work, but Tapan is not on a project). CloudLab and NSF ACCESS are the
+       fallbacks. Nothing past Phase D can start until this lands.
+ - [ ] **Reservation window** — renewable or fixed? Determines whether overhead-first
+       or sorting-first is correct (§0).
+-- [ ] **Locate the 4-node raw results and harness config** (§1.3).
++- [x] **Locate the 4-node raw results** — on `cluster`; see §1.3 and `MANIFEST.md`.
++- [ ] **Confirm the 4-node run really used 4 nodes** against the Chameleon reservation
++      record. No committed file states a node count (§1.3).
++- [ ] **Recover or write off 32 `all_results.csv` rows** (`single_node_mod_spark`/`tpch`/
++      `bare`) that exist in no committed CSV on any branch — see `MANIFEST.md`.
++- [ ] **Scale-factor conflict**: `storage_1_node/README` says 10GB, `stacked_bars.py`
++      writes `tpch_node1_30gb.pdf`. Resolve before citing either.
+diff --git a/oracle/scripts/assign_val_to_de.py b/oracle/scripts/assign_val_to_de.py
+index b5e865c..b3fc096 100644
+--- a/oracle/scripts/assign_val_to_de.py
++++ b/oracle/scripts/assign_val_to_de.py
+@@ -1,6 +1,9 @@
+ import json 
+ import math
++import os
++import subprocess
+ import time
++from datetime import datetime, timezone
+ import pandas as pd
+ import numpy as np
+ from argparse import ArgumentParser
+@@ -30,7 +33,83 @@ def get_table_for_column(col):
+     assert len(matches) == 1, f"Found {matches} for column {col}"
+     return matches[0]
+ 
+-def compute_boris_metric(qdm, unique, relative_query_frequencies, query_set):
++DEFAULT_OUT_DIR = "../data"
++
++
++class Inputs:
++    """Where a run's inputs live. The defaults reproduce the original Drill-based layout
++    (TPC-H + TPC-DS, logs under ../drill_logs and ../tpcds_drill_logs, SF30 cardinality).
++
++    The R2D7 Spark capture is TPC-DS only and keeps everything per scale factor under
++    /mnt/tpcds/results/sf<N>: point logs_dir at the spark_rg_to_access.py output and
++    the other paths at that SF's files, and set tpcds_only.
++    """
++    def __init__(self, logs_dir=None, values_dir="../data",
++                 columns_in_queries="../data/tpcds_columns_in_queries.json",
++                 cardinality="./tpcds_cardinality.json", tpcds_only=False,
++                 query_set=None):
++        self.tpch_logs_dir = "../drill_logs"
++        self.tpcds_logs_dir = logs_dir or "../tpcds_drill_logs"
++        self.values_dir = values_dir
++        self.columns_in_queries = columns_in_queries
++        self.cardinality = cardinality
++        self.tpcds_only = tpcds_only
++        # JSON list of TPC-DS query numbers overriding tpcds_completed.json, e.g. the
++        # queries that completed at every scale factor so the SFs share one history
++        self.query_set = query_set
++
++    def schemas(self):
++        return ["tpcds"] if self.tpcds_only else ["tpch", "tpcds"]
++
++    def as_dict(self):
++        return dict(vars(self))
++
++
++def _git_revision():
++    """Best-effort git commit of the checkout this script runs from."""
++    try:
++        here = os.path.dirname(os.path.abspath(__file__))
++        rev = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=here,
++                                      stderr=subprocess.DEVNULL).decode().strip()
++        dirty = subprocess.call(["git", "diff", "--quiet", "HEAD"], cwd=here,
++                                stdout=subprocess.DEVNULL,
++                                stderr=subprocess.DEVNULL) != 0
++        return rev + ("-dirty" if dirty else "")
++    except Exception:
++        return "unknown"
++
++
++def write_manifest(out_dir, args, distros, query_set, unique, counts, inputs):
++    """Record the exact constants behind a run alongside its results.
++
++    Every result directory has to be self-describing: the revision will be
++    re-run at least once before the final submission, and a sweep is only
++    interpretable if each point states the history size and seed it came from.
++    """
++    manifest = {
++        "num_samples": args.num_samples,
++        "seed": args.seed,
++        "num_trials": args.num_trials,
++        "distros": list(distros),
++        "query_set_size": len(query_set),
++        "distinct_queries_drawn": int(len(unique)),
++        "queries_never_drawn": len(query_set) - int(len(unique)),
++        # min/max are over the queries that were drawn at least once
++        "min_query_count": int(counts.min()),
++        "max_query_count": int(counts.max()),
++        "out_dir": os.path.abspath(out_dir),
++        "inputs": {k: (os.path.abspath(v) if isinstance(v, str) else v)
++                   for k, v in inputs.as_dict().items()},
++        "git_revision": _git_revision(),
++        "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
++    }
++    with open(os.path.join(out_dir, "manifest.json"), "w") as fp:
++        json.dump(manifest, fp, indent=4, sort_keys=True)
++    return manifest
++
++
++def compute_boris_metric(qdm, unique, relative_query_frequencies, query_set,
++                         out_dir=DEFAULT_OUT_DIR):
+     # initialize baseline collection (boris's metric)
+     boris_columns = {l: 0 for l in qdm.columns}
+     boris_tables = {t: 0 for t in qdm.tables}
+@@ -84,19 +163,19 @@ def compute_boris_metric(qdm, unique, relative_query_frequencies, query_set):
+                 boris_data_value_for_rgs_tbls[tbl][rg] = 0
+             boris_data_value_for_rgs_tbls[tbl][rg] += boris_value
+ 
+-    with open("../data/boris_data_val_tbls.json", 'w') as fp:
++    with open(os.path.join(out_dir, "boris_data_val_tbls.json"), 'w') as fp:
+         json.dump(boris_tables, fp, indent=4, sort_keys=True)
+ 
+-    with open("../data/boris_data_val_cols.json", 'w') as fp:
++    with open(os.path.join(out_dir, "boris_data_val_cols.json"), 'w') as fp:
+         json.dump(boris_columns, fp, indent=4, sort_keys=True)
+ 
+-    with open("../data/boris_data_val_rgs_tbls.json", 'w') as fp:
++    with open(os.path.join(out_dir, "boris_data_val_rgs_tbls.json"), 'w') as fp:
+         json.dump(boris_data_value_for_rgs_tbls, fp, indent=4, sort_keys=True)
+ 
+-def compute_value_metric(qdm, unique, counts, query_set, divide, distro):
++def compute_value_metric(qdm, unique, counts, query_set, divide, distro,
++                         out_dir=DEFAULT_OUT_DIR):
+     # For cardinality-weighted method
+-    cardinality = {"tpcds": json.load(open("./tpcds_cardinality.json")), 
+-                   "tpch": json.load(open("./tpch_cardinality.json"))}
++    cardinality = qdm.cardinality
+     dvt = {}
+     dvc = {}
+     dvrt = {}
+@@ -198,27 +277,29 @@ def compute_value_metric(qdm, unique, counts, query_set, divide, distro):
+         dvc[str(iter_)] = data_value_for_columns
+         dvrt[str(iter_)] = data_value_for_rg_tbls
+ 
+-    with open(f"../data/data_val_tbls_{distro}_{divide}.json", 'w') as fp:
++    with open(os.path.join(out_dir, f"data_val_tbls_{distro}_{divide}.json"), 'w') as fp:
+         json.dump(dvt, fp, indent=4, sort_keys=True)
+ 
+-    with open(f"../data/total_vals_{distro}.json", 'w') as fp:
++    with open(os.path.join(out_dir, f"total_vals_{distro}.json"), 'w') as fp:
+         json.dump(total_values, fp, indent=4, sort_keys=True)
+ 
+-    with open(f"../data/data_val_cols_{distro}_{divide}.json", 'w') as fp:
++    with open(os.path.join(out_dir, f"data_val_cols_{distro}_{divide}.json"), 'w') as fp:
+         json.dump(dvc, fp, indent=4, sort_keys=True)
+ 
+     if divide != "cardinality":
+-        with open(f"../data/data_val_rgs_tbls_{distro}_{divide}.json", 'w') as fp:
++        with open(os.path.join(out_dir, f"data_val_rgs_tbls_{distro}_{divide}.json"), 'w') as fp:
+             json.dump(dvrt, fp, indent=4, sort_keys=True)
+ 
+-def compute_query_set():
++def compute_query_set(inputs):
+     query_set = []
+-    with open("../drill_logs/tpch_completed.json") as fp:
+-        completed = json.load(fp)
+-        q = [("tpch", i) for i in completed]
+-        query_set.extend(q)
+-
+-    with open("../tpcds_drill_logs/tpcds_completed.json") as fp:
++    if not inputs.tpcds_only:
++        with open(os.path.join(inputs.tpch_logs_dir, "tpch_completed.json")) as fp:
++            completed = json.load(fp)
++            q = [("tpch", i) for i in completed]
++            query_set.extend(q)
++
++    with open(inputs.query_set or
++              os.path.join(inputs.tpcds_logs_dir, "tpcds_completed.json")) as fp:
+         completed = json.load(fp)
+         q = [("tpcds", i) for i in completed]
+         query_set.extend(q)
+@@ -247,33 +328,38 @@ def compute_total_value(unique, counts, query_set, qdm, iter_):
+ 
+ # class to abstract away accessing information about queries
+ class QueryDataManager:
+-    def __init__(self, num_trials, distro):
+-        df1 = pd.read_csv(f"../data/tpch_query_values_{distro}.csv")
+-        df2 = pd.read_csv(f"../data/tpcds_query_values_{distro}.csv")
++    def __init__(self, num_trials, distro, inputs=None):
++        inputs = inputs or Inputs()
++        self.inputs = inputs
+ 
+         # can also derive this from the number of columns (minus one) in df1.shape 
+         self.num_trials = num_trials 
+ 
+         # values for queries
+-        df1p = df1.set_index("query_id").to_dict("index")
+-        df2p = df2.set_index("query_id").to_dict("index")
+-        self.values = {"tpch": df1p, "tpcds": df2p}
++        df2 = pd.read_csv(os.path.join(inputs.values_dir, f"tpcds_query_values_{distro}.csv"))
++        self.values = {"tpcds": df2.set_index("query_id").to_dict("index")}
+ 
+         # get relevant columns/tables for query
+-        f = open("../data/tpch_columns_in_queries.json")
+-        qdict1 = json.load(f)
+-        f = open("../data/tpcds_columns_in_queries.json")
+-        qdict2 = json.load(f)
+-        self.qdict = {"tpch": qdict1, "tpcds": qdict2}
++        self.qdict = {"tpcds": json.load(open(inputs.columns_in_queries))}
++
++        # For cardinality-weighted method
++        self.cardinality = {"tpcds": json.load(open(inputs.cardinality))}
+ 
+         # have list of all tables, columns in DB
+-        tpch_columns = [x.strip() for x in open("../data/column_names.csv").readlines()]
+         tpcds_columns = [x.strip() for x in
+                          open("../../tpcds_schema/tpcds_column_names.csv").readlines()]
+-        self.columns = tpch_columns + tpcds_columns
+-
+-        tpch_tables = [x.strip() for x in open("../data/table_names.csv").readlines()]
+-        self.tables = tpch_tables + tpcds_tables
++        self.columns = tpcds_columns
++        self.tables = list(tpcds_tables)
++
++        if not inputs.tpcds_only:
++            df1 = pd.read_csv(os.path.join(inputs.values_dir, f"tpch_query_values_{distro}.csv"))
++            self.values["tpch"] = df1.set_index("query_id").to_dict("index")
++            self.qdict["tpch"] = json.load(open("../data/tpch_columns_in_queries.json"))
++            self.cardinality["tpch"] = json.load(open("./tpch_cardinality.json"))
++            tpch_columns = [x.strip() for x in open("../data/column_names.csv").readlines()]
++            self.columns = tpch_columns + tpcds_columns
++            tpch_tables = [x.strip() for x in open("../data/table_names.csv").readlines()]
++            self.tables = tpch_tables + tpcds_tables
+ 
+     def get_rel_tbls(self, schema, qry):
+         # get relevant tables for a query within a schema
+@@ -282,9 +368,10 @@ class QueryDataManager:
+     def get_rg_info(self, schema, qry):
+         # get row-group info for a query 
+         if schema == "tpch":
+-            rg_info = json.load(open(f"../drill_logs/{schema}_{qry}/access.json"))
++            logs_dir = self.inputs.tpch_logs_dir
+         elif schema == "tpcds":
+-            rg_info = json.load(open(f"../tpcds_drill_logs/{schema}_{qry}/access.json"))
++            logs_dir = self.inputs.tpcds_logs_dir
++        rg_info = json.load(open(os.path.join(logs_dir, f"{schema}_{qry}", "access.json")))
+         return rg_info
+ 
+     def get_query_value(self, schema, qry, iter_):
+@@ -297,10 +384,37 @@ if __name__ == "__main__":
+     parser.add_argument("--num-trials", type=int, default=100, 
+                         help="Number of different value generation trials that were run")
+     parser.add_argument("-s", "--seed", type=int, default=42, help="Random seed")
++    parser.add_argument("-o", "--out-dir", default=DEFAULT_OUT_DIR,
++                        help="Directory to write results into. Defaults to the "
++                             "shared ../data so existing pipelines are unchanged; "
++                             "point a sweep at ../data/sweep/N<n>_s<seed> so runs "
++                             "do not overwrite each other.")
++    parser.add_argument("--distro", choices=["normal", "zipf", "both"], default="both",
++                        help="Task-value distribution to compute. Sec 4.4 reports zipf "
++                             "only, so a sweep can halve its runtime with --distro zipf.")
++    parser.add_argument("--logs-dir", default=None,
++                        help="TPC-DS row-group logs (tpcds_<N>/access.json + "
++                             "tpcds_completed.json). Default: ../tpcds_drill_logs")
++    parser.add_argument("--values-dir", default="../data",
++                        help="Directory holding tpcds_query_values_<distro>.csv")
++    parser.add_argument("--columns-in-queries", default="../data/tpcds_columns_in_queries.json",
++                        help="Columns each TPC-DS query references, for the query set in use")
++    parser.add_argument("--cardinality", default="./tpcds_cardinality.json",
++                        help="TPC-DS table cardinalities for the scale factor in use")
++    parser.add_argument("--tpcds-only", action="store_true",
++                        help="Leave TPC-H out of the query set (R2D7 Spark capture)")
++    parser.add_argument("--query-set", default=None,
++                        help="JSON list of TPC-DS query numbers to use instead of "
++                             "<logs-dir>/tpcds_completed.json")
+     args = parser.parse_args()
+ 
++    os.makedirs(args.out_dir, exist_ok=True)
++    inputs = Inputs(logs_dir=args.logs_dir, values_dir=args.values_dir,
++                    columns_in_queries=args.columns_in_queries,
++                    cardinality=args.cardinality, tpcds_only=args.tpcds_only,
++                    query_set=args.query_set)
+ 
+-    query_set = compute_query_set()
++    query_set = compute_query_set(inputs)
+     num_queries = len(query_set)
+     print(f"Number of queries in the set: {num_queries}")
+ 
+@@ -308,16 +422,23 @@ if __name__ == "__main__":
+     start = time.time()
+     unique, counts, relative_query_frequencies = generate_query_sample(args.num_samples, 
+                                                                        num_queries, args.seed)
+-    NORMAL_DISTRO = "normal"
+-    qdm = QueryDataManager(args.num_trials, NORMAL_DISTRO)
+-    compute_boris_metric(qdm, unique, relative_query_frequencies, query_set)
+-    compute_value_metric(qdm, unique, counts, query_set, "equal", NORMAL_DISTRO)
+-    compute_value_metric(qdm, unique, counts, query_set, "full", NORMAL_DISTRO)
+-    compute_value_metric(qdm, unique, counts, query_set, "cardinality", NORMAL_DISTRO)
+-
+-    ZIPF_DISTRO = "zipf"
+-    qdm = QueryDataManager(args.num_trials, ZIPF_DISTRO)
+-    compute_value_metric(qdm, unique, counts, query_set, "equal", ZIPF_DISTRO)
+-    compute_value_metric(qdm, unique, counts, query_set, "full", ZIPF_DISTRO)
+-    compute_value_metric(qdm, unique, counts, query_set, "cardinality", ZIPF_DISTRO)
+-
++    print(f"History N={args.num_samples} seed={args.seed}: "
++          f"{len(unique)}/{num_queries} distinct queries drawn")
++
++    distros = ["normal", "zipf"] if args.distro == "both" else [args.distro]
++
++    # the frequency baseline does not depend on task values, so it is computed
++    # once per history regardless of which distributions are requested
++    qdm = QueryDataManager(args.num_trials, distros[0], inputs)
++    compute_boris_metric(qdm, unique, relative_query_frequencies, query_set,
++                         out_dir=args.out_dir)
++
++    for distro in distros:
++        qdm = QueryDataManager(args.num_trials, distro, inputs)
++        for divide in ["equal", "full", "cardinality"]:
++            compute_value_metric(qdm, unique, counts, query_set, divide, distro,
++                                 out_dir=args.out_dir)
++
++    write_manifest(args.out_dir, args, distros, query_set, unique, counts, inputs)
++    print(f"Wrote results for N={args.num_samples} seed={args.seed} to {args.out_dir} "
++          f"in {time.time() - start:.1f}s")
+diff --git a/oracle/scripts/generate_oracle_vals.py b/oracle/scripts/generate_oracle_vals.py
+index 9f98f43..8d2b744 100644
+--- a/oracle/scripts/generate_oracle_vals.py
++++ b/oracle/scripts/generate_oracle_vals.py
+@@ -1,5 +1,6 @@
+ import numpy as np
+ import json
++import os
+ import pandas as pd
+ from argparse import ArgumentParser
+ 
+@@ -7,22 +8,33 @@ parser = ArgumentParser(description="Generate Values")
+ parser.add_argument("distro", choices=["normal", "zipf"], help="Distribution choice")
+ parser.add_argument("--num-trials", type=int, default=100, help="number of trials")
+ parser.add_argument("--seed", type=int, default=42)
++parser.add_argument("--logs-dir", default="../tpcds_drill_logs",
++                    help="Directory with tpcds_completed.json for the query set in use")
++parser.add_argument("--out-dir", default="../data",
++                    help="Where to write <schema>_query_values_<distro>.csv")
++parser.add_argument("--tpcds-only", action="store_true",
++                    help="Leave TPC-H out of the query set (R2D7 Spark capture)")
++parser.add_argument("--query-set", default=None,
++                    help="JSON list of TPC-DS query numbers to use instead of "
++                         "<logs-dir>/tpcds_completed.json")
+ args = parser.parse_args()
++os.makedirs(args.out_dir, exist_ok=True)
+ 
+ tpch_keys = []
+ tpcds_keys = []
+ 
+ # infer the current query set
+ query_set = []
+-with open("../drill_logs/tpch_completed.json") as fp:
+-    completed = json.load(fp)
+-    q = [("tpch", i) for i in completed]
+-    query_set.extend(q)
+-    tpch_keys = [f"query_{i}" for i in completed]
++if not args.tpcds_only:
++    with open("../drill_logs/tpch_completed.json") as fp:
++        completed = json.load(fp)
++        q = [("tpch", i) for i in completed]
++        query_set.extend(q)
++        tpch_keys = [f"query_{i}" for i in completed]
+ 
+ len_tpch = len(query_set)
+ 
+-with open("../tpcds_drill_logs/tpcds_completed.json") as fp:
++with open(args.query_set or os.path.join(args.logs_dir, "tpcds_completed.json")) as fp:
+     completed = json.load(fp)
+     q = [("tpcds", i) for i in completed]
+     query_set.extend(q)
+@@ -47,13 +59,14 @@ tpcds_vals = samples[len_tpch:]
+ print(f"TPC-H Shape: {tpch_vals.shape}, TPC-DS Shape: {tpcds_vals.shape}")
+ 
+ # write resulting samples to file
+-df = pd.DataFrame(tpch_vals)
+-df["query_id"] = tpch_keys
+-df.to_csv(f"../data/tpch_query_values_{args.distro}.csv", index=False)
++if not args.tpcds_only:
++    df = pd.DataFrame(tpch_vals)
++    df["query_id"] = tpch_keys
++    df.to_csv(os.path.join(args.out_dir, f"tpch_query_values_{args.distro}.csv"), index=False)
+ 
+ df = pd.DataFrame(tpcds_vals)
+ df["query_id"] = tpcds_keys
+-df.to_csv(f"../data/tpcds_query_values_{args.distro}.csv", index=False)
++df.to_csv(os.path.join(args.out_dir, f"tpcds_query_values_{args.distro}.csv"), index=False)
+ 
+ 
+ 
+diff --git a/oracle/scripts/graph_comp_oracles.py b/oracle/scripts/graph_comp_oracles.py
+index 2244c6a..b55ac2a 100644
+--- a/oracle/scripts/graph_comp_oracles.py
++++ b/oracle/scripts/graph_comp_oracles.py
+@@ -3,10 +3,46 @@ import math
+ import matplotlib.pyplot as plt
+ from matplotlib.patches import Patch
+ import json
++import os
+ import numpy as np
+ import re
+ from argparse import ArgumentParser
+ 
++# Display labels for the tables in subset_tables. Keyed by table name so the
++# frequency baseline is looked up by KEY, never by lowercased label: "Customer"
++# lowercases to "customer", which is the TPC-H table, while the boxes above it are
++# tpcds.customer. That mismatch drew 0.105 where 0.317 belonged (raw) in Fig 3.
++TABLE_LABELS = {
++    "date_dim": "Date_dim",
++    "store_sales": "Store_sales",
++    "tpcds.customer": "Customer",
++    "lineitem": "Lineitem",
++    "store": "Store",
++    "household_demographics": "HH_demo",
++    "customer_demographics": "Cust_demo",
++    "income_band": "Inc_band",
++}
++
++
++def label_for(tbl):
++    return TABLE_LABELS.get(tbl, tbl.capitalize())
++
++
++# The revision's displayed table set (rationale in plot_divide()).
++SUBSET_TABLES = ["date_dim", "store_sales", "tpcds.customer", "lineitem",
++                 "store", "household_demographics", "customer_demographics"]
++
++
++def display_tables():
++    """Tables drawn in Figures 3/4. --tables overrides; --tpcds-only drops the TPC-H
++    table (lineitem) from the revision set, since the R2D7 capture has no TPC-H."""
++    if args.tables:
++        return args.tables.split(",")
++    if args.tpcds_only:
++        return [t for t in SUBSET_TABLES if t not in ("lineitem", "orders")]
++    return SUBSET_TABLES
++
++
+ def get_table_for_column(col, tpch_cols_in_tbls, tpcds_cols_in_tbls):
+     matches = []
+     for tbl in tpch_cols_in_tbls:
+@@ -26,14 +62,14 @@ def get_table_for_column(col, tpch_cols_in_tbls, tpcds_cols_in_tbls):
+ def collect_boris_data(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls,
+                        normalized=False):
+     # accumulate boris data
+-    boris_table_values_aggregates = json.load(open(f"../data/boris_data_val_tbls.json"))
++    boris_table_values_aggregates = json.load(open(f"{args.data_dir}/boris_data_val_tbls.json"))
+     if normalized:
+         total = sum([boris_table_values_aggregates[tbl] for tbl in boris_table_values_aggregates])
+         for tbl in boris_table_values_aggregates:
+             x = boris_table_values_aggregates[tbl]
+             boris_table_values_aggregates[tbl] = x / total
+ 
+-    boris_column_values = json.load(open(f"../data/boris_data_val_cols.json"))
++    boris_column_values = json.load(open(f"{args.data_dir}/boris_data_val_cols.json"))
+     boris_column_table_aggregates = {tbl: 0 for tbl in tables}
+     for col in boris_column_values:
+         tbl = get_table_for_column(col, tpch_cols_in_tbls, tpcds_cols_in_tbls)
+@@ -44,7 +80,7 @@ def collect_boris_data(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls,
+             x = boris_column_table_aggregates[tbl]
+             boris_column_table_aggregates[tbl] = x / total
+ 
+-    boris_rg_values = json.load(open(f"../data/boris_data_val_rgs_tbls.json"))
++    boris_rg_values = json.load(open(f"{args.data_dir}/boris_data_val_rgs_tbls.json"))
+     boris_rg_values_aggregates = {}
+     for k in boris_rg_values:
+         output = sum([boris_rg_values[k][rg] for rg in boris_rg_values[k]])
+@@ -71,8 +107,27 @@ def plot_divide(full, equal, card, boris_vals, distro, gran, normalized=True):
+     equal_color = lightgreen
+     card_color = greenblue
+ 
+-    subset_tables = ["date_dim", "tpcds.customer", "store_sales", "store",
+-                     "web_sales", "lineitem", "orders"]#, "part"]
++    # Pre-revision set, kept for history. Chosen before the frequency baseline was
++    # normalized; web_sales and orders are named nowhere in Sec 4.4's prose.
++    # subset_tables = ["date_dim", "tpcds.customer", "store_sales", "store",
++    #                  "web_sales", "lineitem", "orders"]#, "part"]
++    #
++    # Revision set: a sample allocated proportionally to a k=7 clustering of all 31
++    # non-empty tables over the five behaviours these figures display (VDI/freq,
++    # Cardinality/Equal, Full/Equal, Column/Table, RowGroup/Table). Covers 6 of 7
++    # clusters and reproduces the population's 3:1 skew toward frequency assigning
++    # MORE share than VDI (19 of 31 tables) -- the pre-revision set showed that as
++    # 3:2. Keeps every table Sec 4.4 names by name.
++    #
++    # customer_demographics stands in for income_band, which the clustering picked
++    # first: the two carry the same trend (VDI/freq 0.584 vs 0.585, Full/Equal 1.445
++    # vs 1.426) but customer_demographics holds 2.7x the value, which halves the
++    # figure's dynamic range from 15.4x to 7.5x. It also fills a gap in Fig 4 --
++    # RowGroup/Table 0.97, value spread evenly across its 16 row groups, where the
++    # rest of the set is either ~0 or > 1.8. The cost is that cluster 0
++    # {income_band, call_center} goes unrepresented; every member of it is too
++    # low-value to plot, which is itself the point and belongs in the cover letter.
++    subset_tables = display_tables()
+ 
+     # CONSTS 
+     X = 14.4
+@@ -81,8 +136,7 @@ def plot_divide(full, equal, card, boris_vals, distro, gran, normalized=True):
+     font = {'size': 24}
+     plt.rc('font', **font)
+ 
+-    labels = [t.capitalize() for t in subset_tables]
+-    labels[1] = "Customer"
++    labels = [label_for(t) for t in subset_tables]
+     data1 = [full[t] for t in subset_tables]
+     data2 = [equal[t] for t in subset_tables] 
+     data3 = [card[t] for t in subset_tables]
+@@ -106,8 +160,7 @@ def plot_divide(full, equal, card, boris_vals, distro, gran, normalized=True):
+ 
+ 
+     for i in range(len(labels)):
+-        l = labels[i]
+-        y = boris_vals[l.lower()]
++        y = boris_vals[subset_tables[i]]
+         left = positions[i] - 1.5 * width
+         right = positions[i] + 1.5 * width
+         ax.hlines(
+@@ -126,7 +179,25 @@ def plot_divide(full, equal, card, boris_vals, distro, gran, normalized=True):
+     ax.set_xticks(positions, labels)#, rotation=R, ha='right')
+     ax.set_xlabel("Table Name")
+     ax.set_ylabel("% of Total Value" if normalized else "Total Value")
+-    ax.set_ylim([-0.05, 1.0] if normalized else None)
++    # 0.70 is the knee of the clipping trade-off: over the 2100 plotted points it
++    # hides exactly one (store_sales/Cardinality at 0.961) and cuts no box, median
++    # or whisker, while giving the smaller tables 1.43x more vertical room. Below
++    # ~0.60 the Cardinality upper whiskers (store_sales 0.694, lineitem 0.476)
++    # start being cut, and that long upper tail is the defining feature of the
++    # strategy. The one point above the limit is marked at the axis edge rather
++    # than dropped silently.
++    TOP = 0.70
++    ax.set_ylim([-0.05, TOP] if normalized else None)
++    if normalized:
++        for data, off in [(data1, -width), (data2, 0), (data3, width)]:
++            for i in range(len(subset_tables)):
++                above = [v for v in data[i] if v > TOP]
++                if not above:
++                    continue
++                ax.plot([positions[i] + off], [TOP], marker="^", color="black",
++                        markersize=9, clip_on=False, zorder=6)
++                ax.annotate(f"{max(above):.2f}", xy=(positions[i] + off, TOP),
++                            xytext=(5, -22), textcoords="offset points", fontsize=16)
+ 
+     legend_handles = [
+         Patch(facecolor=full_color, label="Full"),
+@@ -138,19 +209,25 @@ def plot_divide(full, equal, card, boris_vals, distro, gran, normalized=True):
+     ax.legend(handles=legend_handles, loc="upper right")
+     plt.tight_layout()
+     normstr = "normalized" if normalized else "absolute"
+-    plt.savefig(f"../figs/{distro}_{gran}_divide_compare_{normstr}.pdf")
++    plt.savefig(f"{args.fig_dir}/{distro}_{gran}_divide_compare_{normstr}.pdf")
+ 
+ 
+ def graph_divide_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, distro, normalized=True):
+-    boris_table_values, _, _ = collect_boris_data(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls)
+-
+-    full_table_vals = json.load(open(f"../data/data_val_tbls_{distro}_full.json"))
+-    equal_table_vals = json.load(open(f"../data/data_val_tbls_{distro}_equal.json"))
+-    card_table_vals = json.load(open(f"../data/data_val_tbls_{distro}_cardinality.json"))
+-
+-    full_cols_vals = json.load(open(f"../data/data_val_cols_{distro}_full.json"))
+-    equal_cols_vals = json.load(open(f"../data/data_val_cols_{distro}_equal.json"))
+-    card_cols_vals = json.load(open(f"../data/data_val_cols_{distro}_cardinality.json"))
++    # Forward `normalized`: without it collect_boris_data defaults to False and the
++    # red line is the RAW access fraction (summing to ~4.17 across tables, the mean
++    # tables-per-query) drawn over boxes that are shares summing to 1. Fig 4 already
++    # passed it, so the two figures plotted the same baseline on scales 4.17x apart.
++    boris_table_values, _, _ = collect_boris_data(tables, tpch_cols_in_tbls,
++                                                  tpcds_cols_in_tbls,
++                                                  normalized=normalized)
++
++    full_table_vals = json.load(open(f"{args.data_dir}/data_val_tbls_{distro}_full.json"))
++    equal_table_vals = json.load(open(f"{args.data_dir}/data_val_tbls_{distro}_equal.json"))
++    card_table_vals = json.load(open(f"{args.data_dir}/data_val_tbls_{distro}_cardinality.json"))
++
++    full_cols_vals = json.load(open(f"{args.data_dir}/data_val_cols_{distro}_full.json"))
++    equal_cols_vals = json.load(open(f"{args.data_dir}/data_val_cols_{distro}_equal.json"))
++    card_cols_vals = json.load(open(f"{args.data_dir}/data_val_cols_{distro}_cardinality.json"))
+ 
+     column_names = full_cols_vals["0"].keys()
+     full_table_final = {tbl: [] for tbl in tables}
+@@ -223,10 +300,10 @@ def graph_granularity_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, distro
+                                                     tpcds_cols_in_tbls,
+                                                     normalized=normalized) 
+ 
+-    task_values = json.load(open(f"../data/total_vals_{distro}.json"))
+-    data_table_values = json.load(open(f"../data/data_val_tbls_{distro}_equal.json"))
+-    data_column_values = json.load(open(f"../data/data_val_cols_{distro}_equal.json"))
+-    data_rg_values = json.load(open(f"../data/data_val_rgs_tbls_{distro}_equal.json"))
++    task_values = json.load(open(f"{args.data_dir}/total_vals_{distro}.json"))
++    data_table_values = json.load(open(f"{args.data_dir}/data_val_tbls_{distro}_equal.json"))
++    data_column_values = json.load(open(f"{args.data_dir}/data_val_cols_{distro}_equal.json"))
++    data_rg_values = json.load(open(f"{args.data_dir}/data_val_rgs_tbls_{distro}_equal.json"))
+ 
+     data_table_values_final = {tbl: [] for tbl in tables}
+     data_column_table_final = {tbl: [] for tbl in tables}
+@@ -285,9 +362,11 @@ def graph_granularity_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, distro
+     green = "#ADDC5A"
+     blue = "#1F63A9"
+ 
+-    subset_tables = ["date_dim", "tpcds.customer","store", "store_sales", "web_sales", "lineitem",
+-         "orders"]#, "part"]
++    # Pre-revision set, kept for history. See the note in plot_divide().
++    # subset_tables = ["date_dim", "tpcds.customer","store", "store_sales", "web_sales", "lineitem",
++    #      "orders"]#, "part"]
+     # subset_tables = tables
++    subset_tables = display_tables()
+ 
+     # CONSTS 
+     font = {'size': 24}
+@@ -296,8 +375,7 @@ def graph_granularity_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, distro
+     Y = 7
+     R = 45
+ 
+-    labels = [t.capitalize() for t in subset_tables]
+-    labels[1] = "Customer"
++    labels = [label_for(t) for t in subset_tables]
+     data1 = [data_table_values_final[t] for t in subset_tables]
+     data2 = [data_column_table_final[t] for t in subset_tables] 
+     data3 = [data_rg_values_final[t] for t in subset_tables]
+@@ -321,17 +399,32 @@ def graph_granularity_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, distro
+ 
+ 
+     for i in range(len(labels)):
+-        l = labels[i]
+-        ax.scatter(positions[i] - width, boris_table_values_aggregates[l.lower()],
++        l = subset_tables[i]
++        ax.scatter(positions[i] - width, boris_table_values_aggregates[l],
+                    color=red, alpha=1.0, edgecolor='k', zorder=5, label="Foo")
+-        ax.scatter(positions[i], boris_column_table_aggregates[l.lower()],
++        ax.scatter(positions[i], boris_column_table_aggregates[l],
+                    color=red, alpha=1.0, edgecolor='k', zorder=5)
+-        ax.scatter(positions[i]+width, boris_rg_values_aggregates[l.lower()],
++        ax.scatter(positions[i]+width, boris_rg_values_aggregates[l],
+                    color=red, alpha=1.0, edgecolor='k', zorder=5)
+ 
+ 
+-    ax.set_xlim(-1.1, 16.1)
+-    ax.set_ylim(-0.05, 1.006 if normalized else 26904.52984889749)
++    # 16.1 for the seven-table set, as before; follows the number of tables otherwise
++    ax.set_xlim(-1.1, positions[-1] + 1.1)
++    # Matched to plot_divide's limit so the two figures share a scale -- they sit
++    # adjacent in Sec 4.4 under the same y-label. Costs one point here too
++    # (store_sales/RowGroup at 0.958) and no box, median or whisker.
++    TOP = 0.70
++    ax.set_ylim(-0.05, TOP if normalized else 26904.52984889749)
++    if normalized:
++        for data, off in [(data1, -width), (data2, 0), (data3, width)]:
++            for i in range(len(subset_tables)):
++                above = [v for v in data[i] if v > TOP]
++                if not above:
++                    continue
++                ax.plot([positions[i] + off], [TOP], marker="^", color="black",
++                        markersize=9, clip_on=False, zorder=6)
++                ax.annotate(f"{max(above):.2f}", xy=(positions[i] + off, TOP),
++                            xytext=(5, -22), textcoords="offset points", fontsize=16)
+ 
+     ax.set_xticks(positions, labels)#, rotation=R, ha='right')
+     ax.set_xlabel("Table Name")
+@@ -352,17 +445,31 @@ def graph_granularity_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, distro
+     # print(lims)
+     # lims = ax.get_ylim()
+     # print(lims)
+-    plt.savefig(f"../figs/{distro}_granularity_compare_{normstr}.pdf")
++    plt.savefig(f"{args.fig_dir}/{distro}_granularity_compare_{normstr}.pdf")
+ 
+ 
+ if __name__ == "__main__":
+     parser = ArgumentParser(description="Run time-series oracle")
+-    parser.add_argument("--distro", choices=["normal", "zipf"], default="zipf",
++    parser.add_argument("--distro", choices=["normal", "zipf", "both"], default="both",
+                         help="Distribution choice")
+     parser.add_argument("--num-trials", type=int, default=100, 
+                         help="Number of different value generation trials that were run")
++    parser.add_argument("--data-dir", default="../data",
++                        help="Directory holding the result files to plot. Point this at "
++                             "a sweep point (../data/sweep/N<n>_s<seed>) to regenerate the "
++                             "figures for that history size. Static schema inputs are "
++                             "always read from ../data.")
++    parser.add_argument("--fig-dir", default="../figs",
++                        help="Directory to write figures into. Give each sweep point its "
++                             "own so they do not overwrite each other.")
++    parser.add_argument("--tpcds-only", action="store_true",
++                        help="Results come from a TPC-DS-only run (R2D7 Spark capture)")
++    parser.add_argument("--tables", default=None,
++                        help="Comma-separated tables to draw, overriding the default set")
+     args = parser.parse_args()
+ 
++    os.makedirs(args.fig_dir, exist_ok=True)
++
+     # TPCH/TPCDS tables and columns
+     tpcds_tables = ["call_center", "catalog_page", "catalog_returns",
+             "catalog_sales", "tpcds.customer", "customer_address",
+@@ -373,15 +480,15 @@ if __name__ == "__main__":
+ 
+     tpch_tables = [x.strip() for x in open("../data/table_names.csv").readlines()]
+     assert len(set(tpcds_tables) & set(tpch_tables)) == 0
+-    tables = tpcds_tables + tpch_tables
++    tables = tpcds_tables if args.tpcds_only else tpcds_tables + tpch_tables
+     tpch_cols_in_tbls = json.load(open("../data/tpch_columns_in_tables.json"))
+     tpcds_cols_in_tbls = json.load(open("../../tpcds_schema/tpcds_columns_in_tables.json"))
+ 
+-    graph_divide_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, "normal", normalized=True)
+-    graph_divide_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, "zipf", normalized=True)
+-
+-    graph_granularity_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls,
+-                           "normal", normalized=False)
+-    graph_granularity_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, "zipf",
+-                      normalized=True)
++    distros = ["normal", "zipf"] if args.distro == "both" else [args.distro]
++    for distro in distros:
++        graph_divide_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, distro,
++                          normalized=True)
++        # normal has historically been plotted on an absolute scale, zipf normalized
++        graph_granularity_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, distro,
++                               normalized=(distro == "zipf"))
+ 
+diff --git a/oracle/scripts/tpcds_parse_columns_from_query.py b/oracle/scripts/tpcds_parse_columns_from_query.py
+index 0d4cce0..2fcf4da 100644
+--- a/oracle/scripts/tpcds_parse_columns_from_query.py
++++ b/oracle/scripts/tpcds_parse_columns_from_query.py
+@@ -8,6 +8,19 @@ TODO:
+ import json
+ import re
+ import os
++from argparse import ArgumentParser
++
++parser = ArgumentParser(description="Columns referenced by each TPC-DS query")
++parser.add_argument("--query-dir", default="../../tpcds_queries",
++                    help="Directory of query files")
++parser.add_argument("--pattern", default="{}_drill2.sql",
++                    help="Query file name, with {} for the query number. The Spark "
++                         "set in spark-lineage-api/benchmarking/tpcds_queries_spark "
++                         "uses query{}.sql")
++parser.add_argument("--queries", default="1-131", help="Query number range, inclusive")
++parser.add_argument("--out-dir", default="../data",
++                    help="Where to write tpcds_columns_in_queries.{json,csv}")
++args = parser.parse_args()
+ 
+ 
+ tpcds_names = ["call_center", "catalog_page", "catalog_returns",
+@@ -49,13 +62,14 @@ for col in column_names:
+ 
+ 
+ # hard coded query range
+-queries = [i for i in range(1, 132)]
++lo, hi = (int(x) for x in args.queries.split("-"))
++queries = [i for i in range(lo, hi + 1)]
+ outputs = {q: {t: [] for t in tpcds_names} for q in queries}
+ 
+ # dont need regex since we have full list of all column names. Also don't need
+ # validation in the same way
+ for query in queries:
+-    fl = f"../../tpcds_queries/{query}_drill2.sql"
++    fl = os.path.join(args.query_dir, args.pattern.format(query))
+     lines = [line for line in open(fl).readlines()]
+     for line in lines:
+         for col in column_names:
+@@ -70,7 +84,8 @@ for query in queries:
+ 
+ 
+ # write this out to json and csv
+-with open("../data/tpcds_columns_in_queries.json", 'w') as fp:
++os.makedirs(args.out_dir, exist_ok=True)
++with open(os.path.join(args.out_dir, "tpcds_columns_in_queries.json"), 'w') as fp:
+     json.dump(outputs, fp, indent=4)
+ 
+ ret = []
+@@ -80,6 +95,6 @@ for query in queries:
+             line = f"{tbl}, {col}, query_{query}"
+             ret.append(line)
+ 
+-with open('../data/tpcds_columns_in_queries.csv', 'w') as fp:
++with open(os.path.join(args.out_dir, "tpcds_columns_in_queries.csv"), 'w') as fp:
+     for l in ret:
+         fp.write(f"{l}\n")
+diff --git a/spark-lineage-api/benchmarking/tpcds_queries_spark/query67.sql b/spark-lineage-api/benchmarking/tpcds_queries_spark/query67.sql
+index fd137cf..f82465e 100644
+--- a/spark-lineage-api/benchmarking/tpcds_queries_spark/query67.sql
++++ b/spark-lineage-api/benchmarking/tpcds_queries_spark/query67.sql
+@@ -1,5 +1,5 @@
+ -- start query 67 in stream 0 using template query67.tpl
+-select top 100 *
++select *
+ from (select i_category
+             ,i_class
+             ,i_brand
+@@ -39,5 +39,6 @@ order by i_category
+         ,s_store_id
+         ,sumsales
+         ,rk
++LIMIT 100
+ ;
+ 
+diff --git a/spark-lineage-api/listener_versions_new/LineageAPI.scala b/spark-lineage-api/listener_versions_new/LineageAPI.scala
+index 2c278bb..90d9f0b 100644
+--- a/spark-lineage-api/listener_versions_new/LineageAPI.scala
++++ b/spark-lineage-api/listener_versions_new/LineageAPI.scala
+@@ -2,6 +2,7 @@ import org.apache.spark.sql.{DataFrame, SaveMode, SparkSession}
+ import org.apache.spark.sql.execution.QueryExecution
+ import org.apache.spark.sql.util.QueryExecutionListener
+ import org.apache.spark.sql.catalyst.expressions.AttributeReference
++import org.apache.hadoop.fs.Path
+ import java.time.Instant
+ import java.io.{BufferedWriter, File, FileWriter}
+ 
+@@ -127,38 +128,54 @@ object LineageAPI {
+ 
+   // Load data from given path and register views or tables
+   def loadData(spark: SparkSession, sourceType: String, path: String, catalogName: String): Unit = {
+-    val dir = new File(path)
++    // Data is enumerated through the Hadoop FileSystem API rather than java.io.File so
++    // that the same code works against hdfs:// and s3a:// as well as local paths.
++    // java.io.File cannot see a distributed filesystem: listFiles() returns null for an
++    // hdfs:// path, which would register no tables at all and leave every query failing
++    // with an unrelated "table not found".
++    val root = new Path(path)
++    val fs = root.getFileSystem(spark.sparkContext.hadoopConfiguration)
++
++    if (!fs.exists(root)) {
++      println(s"sourcePath does not exist: $path")
++      sys.exit(1)
++    }
++    val isDir = fs.getFileStatus(root).isDirectory
++
++    // Paths from listStatus are fully qualified (scheme://authority/path), so executors
++    // resolve exactly what the driver enumerated instead of relying on fs.defaultFS.
++    // Sorted for deterministic registration order across runs.
++    def childrenWithSuffix(suffix: String): Array[Path] =
++      fs.listStatus(root)
++        .filter(st => st.isFile && st.getPath.getName.endsWith(suffix))
++        .map(_.getPath)
++        .sortBy(_.toString)
+ 
+     if (sourceType == "iceberg") {
+-      if (!dir.isDirectory) {
++      if (!isDir) {
+         println(s"Iceberg sourcePath must be a directory of Parquet files. Found: $path")
+         sys.exit(1)
+       }
+-      val files = dir.listFiles().filter(_.getName.endsWith(".parquet"))
+-      files.foreach { file =>
+-        val tableName = file.getName.stripSuffix(".parquet")
++      childrenWithSuffix(".parquet").foreach { p =>
++        val tableName = p.getName.stripSuffix(".parquet")
+         val icebergTable = s"$catalogName.default.$tableName"
+-        val df = spark.read.parquet(file.getAbsolutePath)
++        val df = spark.read.parquet(p.toString)
+         df.writeTo(icebergTable).using("iceberg").createOrReplace()
+       }
+-    } else if (dir.isDirectory) {
+-      val files = dir.listFiles().filter(f =>
+-        f.isFile && ((sourceType == "csv" && f.getName.endsWith(".csv")) ||
+-                     (sourceType == "parquet" && f.getName.endsWith(".parquet")))
+-      )
+-      files.foreach { file =>
+-        val viewName = file.getName.stripSuffix(s".$sourceType")
++    } else if (isDir) {
++      childrenWithSuffix(s".$sourceType").foreach { p =>
++        val viewName = p.getName.stripSuffix(s".$sourceType")
+         val df = sourceType match {
+-          case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(file.getAbsolutePath)
+-          case "parquet" => spark.read.parquet(file.getAbsolutePath)
++          case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(p.toString)
++          case "parquet" => spark.read.parquet(p.toString)
+         }
+         df.createOrReplaceTempView(viewName)
+       }
+     } else {
+-      val viewName = new File(path).getName.stripSuffix(s".$sourceType")
++      val viewName = root.getName.stripSuffix(s".$sourceType")
+       val df = sourceType match {
+-        case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(path)
+-        case "parquet" => spark.read.parquet(path)
++        case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(root.toString)
++        case "parquet" => spark.read.parquet(root.toString)
+       }
+       df.createOrReplaceTempView(viewName)
+     }
+diff --git a/spark-lineage-api/listener_versions_new/LineageAPI_bare.scala b/spark-lineage-api/listener_versions_new/LineageAPI_bare.scala
+index 8d462da..04f2057 100644
+--- a/spark-lineage-api/listener_versions_new/LineageAPI_bare.scala
++++ b/spark-lineage-api/listener_versions_new/LineageAPI_bare.scala
+@@ -2,6 +2,7 @@ import org.apache.spark.sql.{DataFrame, SaveMode, SparkSession}
+ import org.apache.spark.sql.execution.QueryExecution
+ import org.apache.spark.sql.util.QueryExecutionListener
+ import org.apache.spark.sql.catalyst.expressions.AttributeReference
++import org.apache.hadoop.fs.Path
+ import java.time.Instant
+ import java.io.{BufferedWriter, File, FileWriter}
+ 
+@@ -128,38 +129,54 @@ object LineageAPI {
+ 
+   // Load data from given path and register views or tables
+   def loadData(spark: SparkSession, sourceType: String, path: String, catalogName: String): Unit = {
+-    val dir = new File(path)
++    // Data is enumerated through the Hadoop FileSystem API rather than java.io.File so
++    // that the same code works against hdfs:// and s3a:// as well as local paths.
++    // java.io.File cannot see a distributed filesystem: listFiles() returns null for an
++    // hdfs:// path, which would register no tables at all and leave every query failing
++    // with an unrelated "table not found".
++    val root = new Path(path)
++    val fs = root.getFileSystem(spark.sparkContext.hadoopConfiguration)
++
++    if (!fs.exists(root)) {
++      println(s"sourcePath does not exist: $path")
++      sys.exit(1)
++    }
++    val isDir = fs.getFileStatus(root).isDirectory
++
++    // Paths from listStatus are fully qualified (scheme://authority/path), so executors
++    // resolve exactly what the driver enumerated instead of relying on fs.defaultFS.
++    // Sorted for deterministic registration order across runs.
++    def childrenWithSuffix(suffix: String): Array[Path] =
++      fs.listStatus(root)
++        .filter(st => st.isFile && st.getPath.getName.endsWith(suffix))
++        .map(_.getPath)
++        .sortBy(_.toString)
+ 
+     if (sourceType == "iceberg") {
+-      if (!dir.isDirectory) {
++      if (!isDir) {
+         println(s"Iceberg sourcePath must be a directory of Parquet files. Found: $path")
+         sys.exit(1)
+       }
+-      val files = dir.listFiles().filter(_.getName.endsWith(".parquet"))
+-      files.foreach { file =>
+-        val tableName = file.getName.stripSuffix(".parquet")
++      childrenWithSuffix(".parquet").foreach { p =>
++        val tableName = p.getName.stripSuffix(".parquet")
+         val icebergTable = s"$catalogName.default.$tableName"
+-        val df = spark.read.parquet(file.getAbsolutePath)
++        val df = spark.read.parquet(p.toString)
+         df.writeTo(icebergTable).using("iceberg").createOrReplace()
+       }
+-    } else if (dir.isDirectory) {
+-      val files = dir.listFiles().filter(f =>
+-        f.isFile && ((sourceType == "csv" && f.getName.endsWith(".csv")) ||
+-                     (sourceType == "parquet" && f.getName.endsWith(".parquet")))
+-      )
+-      files.foreach { file =>
+-        val viewName = file.getName.stripSuffix(s".$sourceType")
++    } else if (isDir) {
++      childrenWithSuffix(s".$sourceType").foreach { p =>
++        val viewName = p.getName.stripSuffix(s".$sourceType")
+         val df = sourceType match {
+-          case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(file.getAbsolutePath)
+-          case "parquet" => spark.read.parquet(file.getAbsolutePath)
++          case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(p.toString)
++          case "parquet" => spark.read.parquet(p.toString)
+         }
+         df.createOrReplaceTempView(viewName)
+       }
+     } else {
+-      val viewName = new File(path).getName.stripSuffix(s".$sourceType")
++      val viewName = root.getName.stripSuffix(s".$sourceType")
+       val df = sourceType match {
+-        case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(path)
+-        case "parquet" => spark.read.parquet(path)
++        case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(root.toString)
++        case "parquet" => spark.read.parquet(root.toString)
+       }
+       df.createOrReplaceTempView(viewName)
+     }
+diff --git a/spark-lineage-api/listener_versions_new/LineageAPI_bare_just_register.scala b/spark-lineage-api/listener_versions_new/LineageAPI_bare_just_register.scala
+index af89105..ee6d28e 100644
+--- a/spark-lineage-api/listener_versions_new/LineageAPI_bare_just_register.scala
++++ b/spark-lineage-api/listener_versions_new/LineageAPI_bare_just_register.scala
+@@ -1,6 +1,7 @@
+ import org.apache.spark.sql.{SparkSession}
+ import org.apache.spark.sql.execution.QueryExecution
+ import org.apache.spark.sql.util.QueryExecutionListener
++import org.apache.hadoop.fs.Path
+ import java.io.{BufferedWriter, File, FileWriter}
+ 
+ import scala.util.Using
+@@ -99,38 +100,54 @@ object LineageAPI {
+ 
+   // Load data from given path and register views or tables
+   def loadData(spark: SparkSession, sourceType: String, path: String, catalogName: String): Unit = {
+-    val dir = new File(path)
++    // Data is enumerated through the Hadoop FileSystem API rather than java.io.File so
++    // that the same code works against hdfs:// and s3a:// as well as local paths.
++    // java.io.File cannot see a distributed filesystem: listFiles() returns null for an
++    // hdfs:// path, which would register no tables at all and leave every query failing
++    // with an unrelated "table not found".
++    val root = new Path(path)
++    val fs = root.getFileSystem(spark.sparkContext.hadoopConfiguration)
++
++    if (!fs.exists(root)) {
++      println(s"sourcePath does not exist: $path")
++      sys.exit(1)
++    }
++    val isDir = fs.getFileStatus(root).isDirectory
++
++    // Paths from listStatus are fully qualified (scheme://authority/path), so executors
++    // resolve exactly what the driver enumerated instead of relying on fs.defaultFS.
++    // Sorted for deterministic registration order across runs.
++    def childrenWithSuffix(suffix: String): Array[Path] =
++      fs.listStatus(root)
++        .filter(st => st.isFile && st.getPath.getName.endsWith(suffix))
++        .map(_.getPath)
++        .sortBy(_.toString)
+ 
+     if (sourceType == "iceberg") {
+-      if (!dir.isDirectory) {
++      if (!isDir) {
+         println(s"Iceberg sourcePath must be a directory of Parquet files. Found: $path")
+         sys.exit(1)
+       }
+-      val files = dir.listFiles().filter(_.getName.endsWith(".parquet"))
+-      files.foreach { file =>
+-        val tableName = file.getName.stripSuffix(".parquet")
++      childrenWithSuffix(".parquet").foreach { p =>
++        val tableName = p.getName.stripSuffix(".parquet")
+         val icebergTable = s"$catalogName.default.$tableName"
+-        val df = spark.read.parquet(file.getAbsolutePath)
++        val df = spark.read.parquet(p.toString)
+         df.writeTo(icebergTable).using("iceberg").createOrReplace()
+       }
+-    } else if (dir.isDirectory) {
+-      val files = dir.listFiles().filter(f =>
+-        f.isFile && ((sourceType == "csv" && f.getName.endsWith(".csv")) ||
+-                     (sourceType == "parquet" && f.getName.endsWith(".parquet")))
+-      )
+-      files.foreach { file =>
+-        val viewName = file.getName.stripSuffix(s".$sourceType")
++    } else if (isDir) {
++      childrenWithSuffix(s".$sourceType").foreach { p =>
++        val viewName = p.getName.stripSuffix(s".$sourceType")
+         val df = sourceType match {
+-          case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(file.getAbsolutePath)
+-          case "parquet" => spark.read.parquet(file.getAbsolutePath)
++          case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(p.toString)
++          case "parquet" => spark.read.parquet(p.toString)
+         }
+         df.createOrReplaceTempView(viewName)
+       }
+     } else {
+-      val viewName = new File(path).getName.stripSuffix(s".$sourceType")
++      val viewName = root.getName.stripSuffix(s".$sourceType")
+       val df = sourceType match {
+-        case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(path)
+-        case "parquet" => spark.read.parquet(path)
++        case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(root.toString)
++        case "parquet" => spark.read.parquet(root.toString)
+       }
+       df.createOrReplaceTempView(viewName)
+     }
+diff --git a/spark-lineage-api/listener_versions_new/LineageAPI_nowrite.scala b/spark-lineage-api/listener_versions_new/LineageAPI_nowrite.scala
+index 017ae51..4216158 100644
+--- a/spark-lineage-api/listener_versions_new/LineageAPI_nowrite.scala
++++ b/spark-lineage-api/listener_versions_new/LineageAPI_nowrite.scala
+@@ -2,6 +2,7 @@ import org.apache.spark.sql.{DataFrame, SaveMode, SparkSession}
+ import org.apache.spark.sql.execution.QueryExecution
+ import org.apache.spark.sql.util.QueryExecutionListener
+ import org.apache.spark.sql.catalyst.expressions.AttributeReference
++import org.apache.hadoop.fs.Path
+ import java.time.Instant
+ import java.io.{BufferedWriter, File, FileWriter}
+ 
+@@ -113,38 +114,54 @@ object LineageAPI {
+   }
+ 
+   def loadData(spark: SparkSession, sourceType: String, path: String, catalogName: String): Unit = {
+-    val dir = new File(path)
++    // Data is enumerated through the Hadoop FileSystem API rather than java.io.File so
++    // that the same code works against hdfs:// and s3a:// as well as local paths.
++    // java.io.File cannot see a distributed filesystem: listFiles() returns null for an
++    // hdfs:// path, which would register no tables at all and leave every query failing
++    // with an unrelated "table not found".
++    val root = new Path(path)
++    val fs = root.getFileSystem(spark.sparkContext.hadoopConfiguration)
++
++    if (!fs.exists(root)) {
++      println(s"sourcePath does not exist: $path")
++      sys.exit(1)
++    }
++    val isDir = fs.getFileStatus(root).isDirectory
++
++    // Paths from listStatus are fully qualified (scheme://authority/path), so executors
++    // resolve exactly what the driver enumerated instead of relying on fs.defaultFS.
++    // Sorted for deterministic registration order across runs.
++    def childrenWithSuffix(suffix: String): Array[Path] =
++      fs.listStatus(root)
++        .filter(st => st.isFile && st.getPath.getName.endsWith(suffix))
++        .map(_.getPath)
++        .sortBy(_.toString)
+ 
+     if (sourceType == "iceberg") {
+-      if (!dir.isDirectory) {
++      if (!isDir) {
+         println(s"Iceberg sourcePath must be a directory of Parquet files. Found: $path")
+         sys.exit(1)
+       }
+-      val files = dir.listFiles().filter(_.getName.endsWith(".parquet"))
+-      files.foreach { file =>
+-        val tableName = file.getName.stripSuffix(".parquet")
++      childrenWithSuffix(".parquet").foreach { p =>
++        val tableName = p.getName.stripSuffix(".parquet")
+         val icebergTable = s"$catalogName.default.$tableName"
+-        val df = spark.read.parquet(file.getAbsolutePath)
++        val df = spark.read.parquet(p.toString)
+         df.writeTo(icebergTable).using("iceberg").createOrReplace()
+       }
+-    } else if (dir.isDirectory) {
+-      val files = dir.listFiles().filter(f =>
+-        f.isFile && ((sourceType == "csv" && f.getName.endsWith(".csv")) ||
+-                     (sourceType == "parquet" && f.getName.endsWith(".parquet")))
+-      )
+-      files.foreach { file =>
+-        val viewName = file.getName.stripSuffix(s".$sourceType")
++    } else if (isDir) {
++      childrenWithSuffix(s".$sourceType").foreach { p =>
++        val viewName = p.getName.stripSuffix(s".$sourceType")
+         val df = sourceType match {
+-          case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(file.getAbsolutePath)
+-          case "parquet" => spark.read.parquet(file.getAbsolutePath)
++          case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(p.toString)
++          case "parquet" => spark.read.parquet(p.toString)
+         }
+         df.createOrReplaceTempView(viewName)
+       }
+     } else {
+-      val viewName = new File(path).getName.stripSuffix(s".$sourceType")
++      val viewName = root.getName.stripSuffix(s".$sourceType")
+       val df = sourceType match {
+-        case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(path)
+-        case "parquet" => spark.read.parquet(path)
++        case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(root.toString)
++        case "parquet" => spark.read.parquet(root.toString)
+       }
+       df.createOrReplaceTempView(viewName)
+     }
+diff --git a/spark-lineage-api/listener_versions_new/LineageAPI_rgs.scala b/spark-lineage-api/listener_versions_new/LineageAPI_rgs.scala
+index 6e7a891..0f038b4 100644
+--- a/spark-lineage-api/listener_versions_new/LineageAPI_rgs.scala
++++ b/spark-lineage-api/listener_versions_new/LineageAPI_rgs.scala
+@@ -3,6 +3,7 @@ import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, Spark
+ import org.apache.spark.sql.execution.datasources.parquet.RowGroupMetricsRegistry
+ import org.apache.spark.sql.util.QueryExecutionListener
+ 
++import org.apache.hadoop.fs.Path
+ import java.time.Instant
+ import java.sql.Timestamp
+ import java.io.{BufferedWriter, File, FileWriter}
+@@ -12,7 +13,6 @@ import org.apache.spark.sql.catalyst.expressions.AttributeReference
+ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
+ 
+ import java.util.concurrent.CountDownLatch
+-import java.util.regex.Pattern
+ import scala.language.postfixOps
+ import scala.util.Using
+ 
+@@ -134,38 +134,54 @@ object LineageAPI {
+ 
+   // Load data and register as views or tables
+   def loadData(spark: SparkSession, sourceType: String, path: String, catalogName: String): Unit = {
+-    val dir = new File(path)
++    // Data is enumerated through the Hadoop FileSystem API rather than java.io.File so
++    // that the same code works against hdfs:// and s3a:// as well as local paths.
++    // java.io.File cannot see a distributed filesystem: listFiles() returns null for an
++    // hdfs:// path, which would register no tables at all and leave every query failing
++    // with an unrelated "table not found".
++    val root = new Path(path)
++    val fs = root.getFileSystem(spark.sparkContext.hadoopConfiguration)
++
++    if (!fs.exists(root)) {
++      println(s"sourcePath does not exist: $path")
++      sys.exit(1)
++    }
++    val isDir = fs.getFileStatus(root).isDirectory
++
++    // Paths from listStatus are fully qualified (scheme://authority/path), so executors
++    // resolve exactly what the driver enumerated instead of relying on fs.defaultFS.
++    // Sorted for deterministic registration order across runs.
++    def childrenWithSuffix(suffix: String): Array[Path] =
++      fs.listStatus(root)
++        .filter(st => st.isFile && st.getPath.getName.endsWith(suffix))
++        .map(_.getPath)
++        .sortBy(_.toString)
+ 
+     if (sourceType == "iceberg") {
+-      if (!dir.isDirectory) {
++      if (!isDir) {
+         println(s"Iceberg sourcePath must be a directory of Parquet files. Found: $path")
+         sys.exit(1)
+       }
+-      val files = dir.listFiles().filter(_.getName.endsWith(".parquet"))
+-      files.foreach { file =>
+-        val tableName = file.getName.stripSuffix(".parquet")
++      childrenWithSuffix(".parquet").foreach { p =>
++        val tableName = p.getName.stripSuffix(".parquet")
+         val icebergTable = s"$catalogName.default.$tableName"
+-        val df = spark.read.parquet(file.getAbsolutePath)
++        val df = spark.read.parquet(p.toString)
+         df.writeTo(icebergTable).using("iceberg").createOrReplace()
+       }
+-    } else if (dir.isDirectory) {
+-      val files = dir.listFiles().filter(f =>
+-        f.isFile && ((sourceType == "csv" && f.getName.endsWith(".csv")) ||
+-                     (sourceType == "parquet" && f.getName.endsWith(".parquet")))
+-      )
+-      files.foreach { file =>
+-        val viewName = file.getName.stripSuffix(s".$sourceType")
++    } else if (isDir) {
++      childrenWithSuffix(s".$sourceType").foreach { p =>
++        val viewName = p.getName.stripSuffix(s".$sourceType")
+         val df = sourceType match {
+-          case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(file.getAbsolutePath)
+-          case "parquet" => spark.read.parquet(file.getAbsolutePath)
++          case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(p.toString)
++          case "parquet" => spark.read.parquet(p.toString)
+         }
+         df.createOrReplaceTempView(viewName)
+       }
+     } else {
+-      val viewName = new File(path).getName.stripSuffix(s".$sourceType")
++      val viewName = root.getName.stripSuffix(s".$sourceType")
+       val df = sourceType match {
+-        case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(path)
+-        case "parquet" => spark.read.parquet(path)
++        case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(root.toString)
++        case "parquet" => spark.read.parquet(root.toString)
+       }
+       df.createOrReplaceTempView(viewName)
+     }
+@@ -180,12 +196,17 @@ object LineageAPI {
+                        usageTablePath: String)
+                       (implicit spark: SparkSession) extends QueryExecutionListener {
+ 
+-    private val regex_prefix = {
+-      val absPath = new File(dataPath).getAbsolutePath
+-      Pattern.quote(s"file://$absPath/")
+-    }
+-
+-    private val regex_extension = """\.parquet"""
++    // The table name is the file's basename minus the .parquet extension: loadData
++    // registers exactly one temp view per file under that same name, so the two must
++    // agree. Deriving it from the basename is correct under any URI scheme.
++    //
++    // The previous version split the path on a literal "file://" + absolute-path prefix.
++    // Under hdfs:// (or any other scheme, or a differently-slashed file: URI) the split
++    // finds no match and the following (1) throws ArrayIndexOutOfBoundsException, which
++    // onSuccess's caller reports as a generic query failure -- silent loss of all
++    // row-group lineage rather than a visible error.
++    private def tableNameOf(filePath: String): String =
++      new Path(filePath).getName.stripSuffix(".parquet")
+ 
+     type LogType = (String, // table name
+                     String, // column name
+@@ -246,7 +267,7 @@ object LineageAPI {
+           val rowGroupsForQuery = RowGroupMetricsRegistry.get(execId).map(_.value).get
+           rowGroupsForQuery.iterator.foreach { e =>
+             val (filePath, rg_info) = e
+-            val tbl = filePath.split(regex_prefix)(1).split(regex_extension)(0)
++            val tbl = tableNameOf(filePath)
+             rg_info.foreach { info =>
+               val (_, offset, size) = info
+               logsBuffer.addOne(tbl, null, offset, size, dataTaskId, timestamp, 1.0)
+diff --git a/spark-lineage-api/listener_versions_new/LineageAPI_vanilla.scala b/spark-lineage-api/listener_versions_new/LineageAPI_vanilla.scala
+index 1f71496..10c6be8 100644
+--- a/spark-lineage-api/listener_versions_new/LineageAPI_vanilla.scala
++++ b/spark-lineage-api/listener_versions_new/LineageAPI_vanilla.scala
+@@ -2,6 +2,7 @@ import org.apache.spark.sql.SparkSession
+ import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan}
+ import org.apache.spark.sql.util.QueryExecutionListener
+ 
++import org.apache.hadoop.fs.Path
+ import java.time.Instant
+ import java.sql.Timestamp
+ import java.io.{BufferedWriter, File, FileWriter}
+@@ -117,38 +118,54 @@ object LineageAPI {
+ 
+   // Load data and register as views or tables
+   def loadData(spark: SparkSession, sourceType: String, path: String, catalogName: String): Unit = {
+-    val dir = new File(path)
++    // Data is enumerated through the Hadoop FileSystem API rather than java.io.File so
++    // that the same code works against hdfs:// and s3a:// as well as local paths.
++    // java.io.File cannot see a distributed filesystem: listFiles() returns null for an
++    // hdfs:// path, which would register no tables at all and leave every query failing
++    // with an unrelated "table not found".
++    val root = new Path(path)
++    val fs = root.getFileSystem(spark.sparkContext.hadoopConfiguration)
++
++    if (!fs.exists(root)) {
++      println(s"sourcePath does not exist: $path")
++      sys.exit(1)
++    }
++    val isDir = fs.getFileStatus(root).isDirectory
++
++    // Paths from listStatus are fully qualified (scheme://authority/path), so executors
++    // resolve exactly what the driver enumerated instead of relying on fs.defaultFS.
++    // Sorted for deterministic registration order across runs.
++    def childrenWithSuffix(suffix: String): Array[Path] =
++      fs.listStatus(root)
++        .filter(st => st.isFile && st.getPath.getName.endsWith(suffix))
++        .map(_.getPath)
++        .sortBy(_.toString)
+ 
+     if (sourceType == "iceberg") {
+-      if (!dir.isDirectory) {
++      if (!isDir) {
+         println(s"Iceberg sourcePath must be a directory of Parquet files. Found: $path")
+         sys.exit(1)
+       }
+-      val files = dir.listFiles().filter(_.getName.endsWith(".parquet"))
+-      files.foreach { file =>
+-        val tableName = file.getName.stripSuffix(".parquet")
++      childrenWithSuffix(".parquet").foreach { p =>
++        val tableName = p.getName.stripSuffix(".parquet")
+         val icebergTable = s"$catalogName.default.$tableName"
+-        val df = spark.read.parquet(file.getAbsolutePath)
++        val df = spark.read.parquet(p.toString)
+         df.writeTo(icebergTable).using("iceberg").createOrReplace()
+       }
+-    } else if (dir.isDirectory) {
+-      val files = dir.listFiles().filter(f =>
+-        f.isFile && ((sourceType == "csv" && f.getName.endsWith(".csv")) ||
+-                     (sourceType == "parquet" && f.getName.endsWith(".parquet")))
+-      )
+-      files.foreach { file =>
+-        val viewName = file.getName.stripSuffix(s".$sourceType")
++    } else if (isDir) {
++      childrenWithSuffix(s".$sourceType").foreach { p =>
++        val viewName = p.getName.stripSuffix(s".$sourceType")
+         val df = sourceType match {
+-          case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(file.getAbsolutePath)
+-          case "parquet" => spark.read.parquet(file.getAbsolutePath)
++          case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(p.toString)
++          case "parquet" => spark.read.parquet(p.toString)
+         }
+         df.createOrReplaceTempView(viewName)
+       }
+     } else {
+-      val viewName = new File(path).getName.stripSuffix(s".$sourceType")
++      val viewName = root.getName.stripSuffix(s".$sourceType")
+       val df = sourceType match {
+-        case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(path)
+-        case "parquet" => spark.read.parquet(path)
++        case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(root.toString)
++        case "parquet" => spark.read.parquet(root.toString)
+       }
+       df.createOrReplaceTempView(viewName)
+     }

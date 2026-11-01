@@ -2,6 +2,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan}
 import org.apache.spark.sql.util.QueryExecutionListener
 
+import org.apache.hadoop.fs.Path
 import java.time.Instant
 import java.sql.Timestamp
 import java.io.{BufferedWriter, File, FileWriter}
@@ -25,7 +26,8 @@ object LineageAPI {
   val NUM_QUERIES_EXECUTING: Int = 1
 
   def listFiles(dir: String): Array[String] = {
-    new File(dir).listFiles().map(_.getAbsolutePath)
+    // Sorted and .sql-only so query order is deterministic (listFiles has no defined order)
+    new File(dir).listFiles().map(_.getAbsolutePath).filter(_.endsWith(".sql")).sorted
   }
 
   private def appendToCsv(filePath: String, headers: Seq[String], row: Seq[Any]): Unit = {
@@ -58,13 +60,15 @@ object LineageAPI {
     val isTpch: Boolean = sourcePath.contains("tpch")
     val dataset = if (isTpch) "tpch" else "tpcds"
     val queryList = listFiles(queryDir)
-    val headers = Seq("query", "dataset", "runtime")
+    val headers = Seq("query", "dataset", "runtime", "listener_timeout")
     val outfile = "spark_internal_listener_vanilla_results.csv"
     val queryStartedFile = "spark_vanilla_queries_started.csv"
 
     val spark = SparkSession.builder()
       .appName("LineageAPI")
-      .master("local[*]")
+      // Master intentionally unset: governed by --master on spark-submit, so the
+      // same jar runs single-node (spark-submit defaults to local[*]) or against a
+      // standalone cluster. Setting it here silently overrides --master.
       .config(s"spark.sql.catalog.$catalogName", "org.apache.iceberg.spark.SparkCatalog")
       .config(s"spark.sql.catalog.$catalogName.type", "hadoop")
       .config(s"spark.sql.catalog.$catalogName.warehouse", "file:///tmp/iceberg/warehouse")
@@ -100,12 +104,12 @@ object LineageAPI {
           resultDF.show()
           val endTime = System.currentTimeMillis()
           val runtime = endTime - startTime
-          val data = Seq(queryName, dataset, runtime)
+          val data = Seq(queryName, dataset, runtime, false)  // no listener; column kept for a uniform schema
           appendToCsv(outfile, headers, data)
         } catch {
           case e: Exception =>
             println(s"Query failed: ${e.getMessage}")
-            val data = Seq(queryName, dataset, -1)
+            val data = Seq(queryName, dataset, -1, false)
             appendToCsv(outfile, headers, data)
         }
       }
@@ -115,38 +119,54 @@ object LineageAPI {
 
   // Load data and register as views or tables
   def loadData(spark: SparkSession, sourceType: String, path: String, catalogName: String): Unit = {
-    val dir = new File(path)
+    // Data is enumerated through the Hadoop FileSystem API rather than java.io.File so
+    // that the same code works against hdfs:// and s3a:// as well as local paths.
+    // java.io.File cannot see a distributed filesystem: listFiles() returns null for an
+    // hdfs:// path, which would register no tables at all and leave every query failing
+    // with an unrelated "table not found".
+    val root = new Path(path)
+    val fs = root.getFileSystem(spark.sparkContext.hadoopConfiguration)
+
+    if (!fs.exists(root)) {
+      println(s"sourcePath does not exist: $path")
+      sys.exit(1)
+    }
+    val isDir = fs.getFileStatus(root).isDirectory
+
+    // Paths from listStatus are fully qualified (scheme://authority/path), so executors
+    // resolve exactly what the driver enumerated instead of relying on fs.defaultFS.
+    // Sorted for deterministic registration order across runs.
+    def childrenWithSuffix(suffix: String): Array[Path] =
+      fs.listStatus(root)
+        .filter(st => st.isFile && st.getPath.getName.endsWith(suffix))
+        .map(_.getPath)
+        .sortBy(_.toString)
 
     if (sourceType == "iceberg") {
-      if (!dir.isDirectory) {
+      if (!isDir) {
         println(s"Iceberg sourcePath must be a directory of Parquet files. Found: $path")
         sys.exit(1)
       }
-      val files = dir.listFiles().filter(_.getName.endsWith(".parquet"))
-      files.foreach { file =>
-        val tableName = file.getName.stripSuffix(".parquet")
+      childrenWithSuffix(".parquet").foreach { p =>
+        val tableName = p.getName.stripSuffix(".parquet")
         val icebergTable = s"$catalogName.default.$tableName"
-        val df = spark.read.parquet(file.getAbsolutePath)
+        val df = spark.read.parquet(p.toString)
         df.writeTo(icebergTable).using("iceberg").createOrReplace()
       }
-    } else if (dir.isDirectory) {
-      val files = dir.listFiles().filter(f =>
-        f.isFile && ((sourceType == "csv" && f.getName.endsWith(".csv")) ||
-                     (sourceType == "parquet" && f.getName.endsWith(".parquet")))
-      )
-      files.foreach { file =>
-        val viewName = file.getName.stripSuffix(s".$sourceType")
+    } else if (isDir) {
+      childrenWithSuffix(s".$sourceType").foreach { p =>
+        val viewName = p.getName.stripSuffix(s".$sourceType")
         val df = sourceType match {
-          case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(file.getAbsolutePath)
-          case "parquet" => spark.read.parquet(file.getAbsolutePath)
+          case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(p.toString)
+          case "parquet" => spark.read.parquet(p.toString)
         }
         df.createOrReplaceTempView(viewName)
       }
     } else {
-      val viewName = new File(path).getName.stripSuffix(s".$sourceType")
+      val viewName = root.getName.stripSuffix(s".$sourceType")
       val df = sourceType match {
-        case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(path)
-        case "parquet" => spark.read.parquet(path)
+        case "csv" => spark.read.option("header", "true").option("inferSchema", "true").csv(root.toString)
+        case "parquet" => spark.read.parquet(root.toString)
       }
       df.createOrReplaceTempView(viewName)
     }

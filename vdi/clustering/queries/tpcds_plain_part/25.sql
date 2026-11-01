@@ -6,7 +6,7 @@ SELECT
   SUM(ss_net_profit) AS store_sales_profit,
   SUM(sr_net_loss) AS store_returns_loss,
   SUM(cs_net_profit) AS catalog_sales_profit
-FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_rand/store_returns/*.parquet') AS store_returns, READ_PARQUET('/home/cc/tpcds_cluster_base/catalog_sales/*.parquet') AS catalog_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS d1, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS d2, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS d3, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store, READ_PARQUET('/home/cc/tpcds_cluster_base/item/*.parquet') AS item
+FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/store_returns/*.parquet') AS store_returns, READ_PARQUET('/home/cc/tpcds_cluster_base/catalog_sales/*.parquet') AS catalog_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS d1, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS d2, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS d3, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store, READ_PARQUET('/home/cc/tpcds_cluster_base/item/*.parquet') AS item
 WHERE
   d1.d_moy = 4
   AND d1.d_year = 2001

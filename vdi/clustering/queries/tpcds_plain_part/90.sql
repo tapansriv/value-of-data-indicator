@@ -7,7 +7,7 @@ SELECT
 FROM (
     SELECT
       COUNT(*) AS amc
-    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/web_sales/*.parquet') AS web_sales, READ_PARQUET('/home/cc/tpcds_cluster_rand/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/web_page/*.parquet') AS web_page
+    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/web_sales/*.parquet') AS web_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/web_page/*.parquet') AS web_page
     WHERE
       ws_sold_time_sk = time_dim.t_time_sk
       AND ws_ship_hdemo_sk = household_demographics.hd_demo_sk
@@ -18,7 +18,7 @@ FROM (
 ) AS at1, (
     SELECT
       COUNT(*) AS pmc
-    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/web_sales/*.parquet') AS web_sales, READ_PARQUET('/home/cc/tpcds_cluster_rand/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/web_page/*.parquet') AS web_page
+    FROM READ_PARQUET('/home/cc/tpcds_cluster_base/web_sales/*.parquet') AS web_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/household_demographics/*.parquet') AS household_demographics, READ_PARQUET('/home/cc/tpcds_cluster_base/time_dim/*.parquet') AS time_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/web_page/*.parquet') AS web_page
     WHERE
       ws_sold_time_sk = time_dim.t_time_sk
       AND ws_ship_hdemo_sk = household_demographics.hd_demo_sk

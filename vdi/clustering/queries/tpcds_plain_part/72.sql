@@ -22,7 +22,7 @@ JOIN READ_PARQUET('/home/cc/tpcds_cluster_base/customer_demographics/*.parquet')
   ON (
     cs_bill_cdemo_sk = cd_demo_sk
   )
-JOIN READ_PARQUET('/home/cc/tpcds_cluster_rand/household_demographics/*.parquet') AS household_demographics
+JOIN READ_PARQUET('/home/cc/tpcds_cluster_base/household_demographics/*.parquet') AS household_demographics
   ON (
     cs_bill_hdemo_sk = hd_demo_sk
   )

@@ -1,6 +1,9 @@
 import json 
 import math
+import os
+import subprocess
 import time
+from datetime import datetime, timezone
 import pandas as pd
 import numpy as np
 from argparse import ArgumentParser
@@ -30,7 +33,83 @@ def get_table_for_column(col):
     assert len(matches) == 1, f"Found {matches} for column {col}"
     return matches[0]
 
-def compute_boris_metric(qdm, unique, relative_query_frequencies, query_set):
+DEFAULT_OUT_DIR = "../data"
+
+
+class Inputs:
+    """Where a run's inputs live. The defaults reproduce the original Drill-based layout
+    (TPC-H + TPC-DS, logs under ../drill_logs and ../tpcds_drill_logs, SF30 cardinality).
+
+    The R2D7 Spark capture is TPC-DS only and keeps everything per scale factor under
+    /mnt/tpcds/results/sf<N>: point logs_dir at the spark_rg_to_access.py output and
+    the other paths at that SF's files, and set tpcds_only.
+    """
+    def __init__(self, logs_dir=None, values_dir="../data",
+                 columns_in_queries="../data/tpcds_columns_in_queries.json",
+                 cardinality="./tpcds_cardinality.json", tpcds_only=False,
+                 query_set=None):
+        self.tpch_logs_dir = "../drill_logs"
+        self.tpcds_logs_dir = logs_dir or "../tpcds_drill_logs"
+        self.values_dir = values_dir
+        self.columns_in_queries = columns_in_queries
+        self.cardinality = cardinality
+        self.tpcds_only = tpcds_only
+        # JSON list of TPC-DS query numbers overriding tpcds_completed.json, e.g. the
+        # queries that completed at every scale factor so the SFs share one history
+        self.query_set = query_set
+
+    def schemas(self):
+        return ["tpcds"] if self.tpcds_only else ["tpch", "tpcds"]
+
+    def as_dict(self):
+        return dict(vars(self))
+
+
+def _git_revision():
+    """Best-effort git commit of the checkout this script runs from."""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        rev = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=here,
+                                      stderr=subprocess.DEVNULL).decode().strip()
+        dirty = subprocess.call(["git", "diff", "--quiet", "HEAD"], cwd=here,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL) != 0
+        return rev + ("-dirty" if dirty else "")
+    except Exception:
+        return "unknown"
+
+
+def write_manifest(out_dir, args, distros, query_set, unique, counts, inputs):
+    """Record the exact constants behind a run alongside its results.
+
+    Every result directory has to be self-describing: the revision will be
+    re-run at least once before the final submission, and a sweep is only
+    interpretable if each point states the history size and seed it came from.
+    """
+    manifest = {
+        "num_samples": args.num_samples,
+        "seed": args.seed,
+        "num_trials": args.num_trials,
+        "distros": list(distros),
+        "query_set_size": len(query_set),
+        "distinct_queries_drawn": int(len(unique)),
+        "queries_never_drawn": len(query_set) - int(len(unique)),
+        # min/max are over the queries that were drawn at least once
+        "min_query_count": int(counts.min()),
+        "max_query_count": int(counts.max()),
+        "out_dir": os.path.abspath(out_dir),
+        "inputs": {k: (os.path.abspath(v) if isinstance(v, str) else v)
+                   for k, v in inputs.as_dict().items()},
+        "git_revision": _git_revision(),
+        "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    with open(os.path.join(out_dir, "manifest.json"), "w") as fp:
+        json.dump(manifest, fp, indent=4, sort_keys=True)
+    return manifest
+
+
+def compute_boris_metric(qdm, unique, relative_query_frequencies, query_set,
+                         out_dir=DEFAULT_OUT_DIR):
     # initialize baseline collection (boris's metric)
     boris_columns = {l: 0 for l in qdm.columns}
     boris_tables = {t: 0 for t in qdm.tables}
@@ -84,19 +163,19 @@ def compute_boris_metric(qdm, unique, relative_query_frequencies, query_set):
                 boris_data_value_for_rgs_tbls[tbl][rg] = 0
             boris_data_value_for_rgs_tbls[tbl][rg] += boris_value
 
-    with open("../data/boris_data_val_tbls.json", 'w') as fp:
+    with open(os.path.join(out_dir, "boris_data_val_tbls.json"), 'w') as fp:
         json.dump(boris_tables, fp, indent=4, sort_keys=True)
 
-    with open("../data/boris_data_val_cols.json", 'w') as fp:
+    with open(os.path.join(out_dir, "boris_data_val_cols.json"), 'w') as fp:
         json.dump(boris_columns, fp, indent=4, sort_keys=True)
 
-    with open("../data/boris_data_val_rgs_tbls.json", 'w') as fp:
+    with open(os.path.join(out_dir, "boris_data_val_rgs_tbls.json"), 'w') as fp:
         json.dump(boris_data_value_for_rgs_tbls, fp, indent=4, sort_keys=True)
 
-def compute_value_metric(qdm, unique, counts, query_set, divide, distro):
+def compute_value_metric(qdm, unique, counts, query_set, divide, distro,
+                         out_dir=DEFAULT_OUT_DIR):
     # For cardinality-weighted method
-    cardinality = {"tpcds": json.load(open("./tpcds_cardinality.json")), 
-                   "tpch": json.load(open("./tpch_cardinality.json"))}
+    cardinality = qdm.cardinality
     dvt = {}
     dvc = {}
     dvrt = {}
@@ -198,27 +277,29 @@ def compute_value_metric(qdm, unique, counts, query_set, divide, distro):
         dvc[str(iter_)] = data_value_for_columns
         dvrt[str(iter_)] = data_value_for_rg_tbls
 
-    with open(f"../data/data_val_tbls_{distro}_{divide}.json", 'w') as fp:
+    with open(os.path.join(out_dir, f"data_val_tbls_{distro}_{divide}.json"), 'w') as fp:
         json.dump(dvt, fp, indent=4, sort_keys=True)
 
-    with open(f"../data/total_vals_{distro}.json", 'w') as fp:
+    with open(os.path.join(out_dir, f"total_vals_{distro}.json"), 'w') as fp:
         json.dump(total_values, fp, indent=4, sort_keys=True)
 
-    with open(f"../data/data_val_cols_{distro}_{divide}.json", 'w') as fp:
+    with open(os.path.join(out_dir, f"data_val_cols_{distro}_{divide}.json"), 'w') as fp:
         json.dump(dvc, fp, indent=4, sort_keys=True)
 
     if divide != "cardinality":
-        with open(f"../data/data_val_rgs_tbls_{distro}_{divide}.json", 'w') as fp:
+        with open(os.path.join(out_dir, f"data_val_rgs_tbls_{distro}_{divide}.json"), 'w') as fp:
             json.dump(dvrt, fp, indent=4, sort_keys=True)
 
-def compute_query_set():
+def compute_query_set(inputs):
     query_set = []
-    with open("../drill_logs/tpch_completed.json") as fp:
-        completed = json.load(fp)
-        q = [("tpch", i) for i in completed]
-        query_set.extend(q)
+    if not inputs.tpcds_only:
+        with open(os.path.join(inputs.tpch_logs_dir, "tpch_completed.json")) as fp:
+            completed = json.load(fp)
+            q = [("tpch", i) for i in completed]
+            query_set.extend(q)
 
-    with open("../tpcds_drill_logs/tpcds_completed.json") as fp:
+    with open(inputs.query_set or
+              os.path.join(inputs.tpcds_logs_dir, "tpcds_completed.json")) as fp:
         completed = json.load(fp)
         q = [("tpcds", i) for i in completed]
         query_set.extend(q)
@@ -247,33 +328,38 @@ def compute_total_value(unique, counts, query_set, qdm, iter_):
 
 # class to abstract away accessing information about queries
 class QueryDataManager:
-    def __init__(self, num_trials, distro):
-        df1 = pd.read_csv(f"../data/tpch_query_values_{distro}.csv")
-        df2 = pd.read_csv(f"../data/tpcds_query_values_{distro}.csv")
+    def __init__(self, num_trials, distro, inputs=None):
+        inputs = inputs or Inputs()
+        self.inputs = inputs
 
         # can also derive this from the number of columns (minus one) in df1.shape 
         self.num_trials = num_trials 
 
         # values for queries
-        df1p = df1.set_index("query_id").to_dict("index")
-        df2p = df2.set_index("query_id").to_dict("index")
-        self.values = {"tpch": df1p, "tpcds": df2p}
+        df2 = pd.read_csv(os.path.join(inputs.values_dir, f"tpcds_query_values_{distro}.csv"))
+        self.values = {"tpcds": df2.set_index("query_id").to_dict("index")}
 
         # get relevant columns/tables for query
-        f = open("../data/tpch_columns_in_queries.json")
-        qdict1 = json.load(f)
-        f = open("../data/tpcds_columns_in_queries.json")
-        qdict2 = json.load(f)
-        self.qdict = {"tpch": qdict1, "tpcds": qdict2}
+        self.qdict = {"tpcds": json.load(open(inputs.columns_in_queries))}
+
+        # For cardinality-weighted method
+        self.cardinality = {"tpcds": json.load(open(inputs.cardinality))}
 
         # have list of all tables, columns in DB
-        tpch_columns = [x.strip() for x in open("../data/column_names.csv").readlines()]
         tpcds_columns = [x.strip() for x in
                          open("../../tpcds_schema/tpcds_column_names.csv").readlines()]
-        self.columns = tpch_columns + tpcds_columns
+        self.columns = tpcds_columns
+        self.tables = list(tpcds_tables)
 
-        tpch_tables = [x.strip() for x in open("../data/table_names.csv").readlines()]
-        self.tables = tpch_tables + tpcds_tables
+        if not inputs.tpcds_only:
+            df1 = pd.read_csv(os.path.join(inputs.values_dir, f"tpch_query_values_{distro}.csv"))
+            self.values["tpch"] = df1.set_index("query_id").to_dict("index")
+            self.qdict["tpch"] = json.load(open("../data/tpch_columns_in_queries.json"))
+            self.cardinality["tpch"] = json.load(open("./tpch_cardinality.json"))
+            tpch_columns = [x.strip() for x in open("../data/column_names.csv").readlines()]
+            self.columns = tpch_columns + tpcds_columns
+            tpch_tables = [x.strip() for x in open("../data/table_names.csv").readlines()]
+            self.tables = tpch_tables + tpcds_tables
 
     def get_rel_tbls(self, schema, qry):
         # get relevant tables for a query within a schema
@@ -282,9 +368,10 @@ class QueryDataManager:
     def get_rg_info(self, schema, qry):
         # get row-group info for a query 
         if schema == "tpch":
-            rg_info = json.load(open(f"../drill_logs/{schema}_{qry}/access.json"))
+            logs_dir = self.inputs.tpch_logs_dir
         elif schema == "tpcds":
-            rg_info = json.load(open(f"../tpcds_drill_logs/{schema}_{qry}/access.json"))
+            logs_dir = self.inputs.tpcds_logs_dir
+        rg_info = json.load(open(os.path.join(logs_dir, f"{schema}_{qry}", "access.json")))
         return rg_info
 
     def get_query_value(self, schema, qry, iter_):
@@ -297,10 +384,37 @@ if __name__ == "__main__":
     parser.add_argument("--num-trials", type=int, default=100, 
                         help="Number of different value generation trials that were run")
     parser.add_argument("-s", "--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("-o", "--out-dir", default=DEFAULT_OUT_DIR,
+                        help="Directory to write results into. Defaults to the "
+                             "shared ../data so existing pipelines are unchanged; "
+                             "point a sweep at ../data/sweep/N<n>_s<seed> so runs "
+                             "do not overwrite each other.")
+    parser.add_argument("--distro", choices=["normal", "zipf", "both"], default="both",
+                        help="Task-value distribution to compute. Sec 4.4 reports zipf "
+                             "only, so a sweep can halve its runtime with --distro zipf.")
+    parser.add_argument("--logs-dir", default=None,
+                        help="TPC-DS row-group logs (tpcds_<N>/access.json + "
+                             "tpcds_completed.json). Default: ../tpcds_drill_logs")
+    parser.add_argument("--values-dir", default="../data",
+                        help="Directory holding tpcds_query_values_<distro>.csv")
+    parser.add_argument("--columns-in-queries", default="../data/tpcds_columns_in_queries.json",
+                        help="Columns each TPC-DS query references, for the query set in use")
+    parser.add_argument("--cardinality", default="./tpcds_cardinality.json",
+                        help="TPC-DS table cardinalities for the scale factor in use")
+    parser.add_argument("--tpcds-only", action="store_true",
+                        help="Leave TPC-H out of the query set (R2D7 Spark capture)")
+    parser.add_argument("--query-set", default=None,
+                        help="JSON list of TPC-DS query numbers to use instead of "
+                             "<logs-dir>/tpcds_completed.json")
     args = parser.parse_args()
 
+    os.makedirs(args.out_dir, exist_ok=True)
+    inputs = Inputs(logs_dir=args.logs_dir, values_dir=args.values_dir,
+                    columns_in_queries=args.columns_in_queries,
+                    cardinality=args.cardinality, tpcds_only=args.tpcds_only,
+                    query_set=args.query_set)
 
-    query_set = compute_query_set()
+    query_set = compute_query_set(inputs)
     num_queries = len(query_set)
     print(f"Number of queries in the set: {num_queries}")
 
@@ -308,16 +422,23 @@ if __name__ == "__main__":
     start = time.time()
     unique, counts, relative_query_frequencies = generate_query_sample(args.num_samples, 
                                                                        num_queries, args.seed)
-    NORMAL_DISTRO = "normal"
-    qdm = QueryDataManager(args.num_trials, NORMAL_DISTRO)
-    compute_boris_metric(qdm, unique, relative_query_frequencies, query_set)
-    compute_value_metric(qdm, unique, counts, query_set, "equal", NORMAL_DISTRO)
-    compute_value_metric(qdm, unique, counts, query_set, "full", NORMAL_DISTRO)
-    compute_value_metric(qdm, unique, counts, query_set, "cardinality", NORMAL_DISTRO)
+    print(f"History N={args.num_samples} seed={args.seed}: "
+          f"{len(unique)}/{num_queries} distinct queries drawn")
 
-    ZIPF_DISTRO = "zipf"
-    qdm = QueryDataManager(args.num_trials, ZIPF_DISTRO)
-    compute_value_metric(qdm, unique, counts, query_set, "equal", ZIPF_DISTRO)
-    compute_value_metric(qdm, unique, counts, query_set, "full", ZIPF_DISTRO)
-    compute_value_metric(qdm, unique, counts, query_set, "cardinality", ZIPF_DISTRO)
+    distros = ["normal", "zipf"] if args.distro == "both" else [args.distro]
 
+    # the frequency baseline does not depend on task values, so it is computed
+    # once per history regardless of which distributions are requested
+    qdm = QueryDataManager(args.num_trials, distros[0], inputs)
+    compute_boris_metric(qdm, unique, relative_query_frequencies, query_set,
+                         out_dir=args.out_dir)
+
+    for distro in distros:
+        qdm = QueryDataManager(args.num_trials, distro, inputs)
+        for divide in ["equal", "full", "cardinality"]:
+            compute_value_metric(qdm, unique, counts, query_set, divide, distro,
+                                 out_dir=args.out_dir)
+
+    write_manifest(args.out_dir, args, distros, query_set, unique, counts, inputs)
+    print(f"Wrote results for N={args.num_samples} seed={args.seed} to {args.out_dir} "
+          f"in {time.time() - start:.1f}s")

@@ -3,9 +3,49 @@ import math
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 import json
+import os
 import numpy as np
 import re
 from argparse import ArgumentParser
+
+# Display labels for the tables in subset_tables. Keyed by table name so the
+# frequency baseline is looked up by KEY, never by lowercased label: "Customer"
+# lowercases to "customer", which is the TPC-H table, while the boxes above it are
+# tpcds.customer. That mismatch drew 0.105 where 0.317 belonged (raw) in Fig 3.
+TABLE_LABELS = {
+    "date_dim": "Date_dim",
+    "store_sales": "Store_sales",
+    "tpcds.customer": "Customer",
+    "lineitem": "Lineitem",
+    "store": "Store",
+    "household_demographics": "HH_demo",
+    "customer_demographics": "Cust_demo",
+    "income_band": "Inc_band",
+    "item": "Item",
+    "catalog_sales": "Catalog_sales",
+    "store_returns": "Store_returns",
+    "catalog_returns": "Cat_returns",
+}
+
+
+def label_for(tbl):
+    return TABLE_LABELS.get(tbl, tbl.capitalize())
+
+
+# The revision's displayed table set (rationale in plot_divide()).
+SUBSET_TABLES = ["date_dim", "store_sales", "tpcds.customer", "lineitem",
+                 "store", "household_demographics", "customer_demographics"]
+
+
+def display_tables():
+    """Tables drawn in Figures 3/4. --tables overrides; --tpcds-only drops the TPC-H
+    table (lineitem) from the revision set, since the R2D7 capture has no TPC-H."""
+    if args.tables:
+        return args.tables.split(",")
+    if args.tpcds_only:
+        return [t for t in SUBSET_TABLES if t not in ("lineitem", "orders")]
+    return SUBSET_TABLES
+
 
 def get_table_for_column(col, tpch_cols_in_tbls, tpcds_cols_in_tbls):
     matches = []
@@ -26,14 +66,14 @@ def get_table_for_column(col, tpch_cols_in_tbls, tpcds_cols_in_tbls):
 def collect_boris_data(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls,
                        normalized=False):
     # accumulate boris data
-    boris_table_values_aggregates = json.load(open(f"../data/boris_data_val_tbls.json"))
+    boris_table_values_aggregates = json.load(open(f"{args.data_dir}/boris_data_val_tbls.json"))
     if normalized:
         total = sum([boris_table_values_aggregates[tbl] for tbl in boris_table_values_aggregates])
         for tbl in boris_table_values_aggregates:
             x = boris_table_values_aggregates[tbl]
             boris_table_values_aggregates[tbl] = x / total
 
-    boris_column_values = json.load(open(f"../data/boris_data_val_cols.json"))
+    boris_column_values = json.load(open(f"{args.data_dir}/boris_data_val_cols.json"))
     boris_column_table_aggregates = {tbl: 0 for tbl in tables}
     for col in boris_column_values:
         tbl = get_table_for_column(col, tpch_cols_in_tbls, tpcds_cols_in_tbls)
@@ -44,7 +84,7 @@ def collect_boris_data(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls,
             x = boris_column_table_aggregates[tbl]
             boris_column_table_aggregates[tbl] = x / total
 
-    boris_rg_values = json.load(open(f"../data/boris_data_val_rgs_tbls.json"))
+    boris_rg_values = json.load(open(f"{args.data_dir}/boris_data_val_rgs_tbls.json"))
     boris_rg_values_aggregates = {}
     for k in boris_rg_values:
         output = sum([boris_rg_values[k][rg] for rg in boris_rg_values[k]])
@@ -71,8 +111,27 @@ def plot_divide(full, equal, card, boris_vals, distro, gran, normalized=True):
     equal_color = lightgreen
     card_color = greenblue
 
-    subset_tables = ["date_dim", "tpcds.customer", "store_sales", "store",
-                     "web_sales", "lineitem", "orders"]#, "part"]
+    # Pre-revision set, kept for history. Chosen before the frequency baseline was
+    # normalized; web_sales and orders are named nowhere in Sec 4.4's prose.
+    # subset_tables = ["date_dim", "tpcds.customer", "store_sales", "store",
+    #                  "web_sales", "lineitem", "orders"]#, "part"]
+    #
+    # Revision set: a sample allocated proportionally to a k=7 clustering of all 31
+    # non-empty tables over the five behaviours these figures display (VDI/freq,
+    # Cardinality/Equal, Full/Equal, Column/Table, RowGroup/Table). Covers 6 of 7
+    # clusters and reproduces the population's 3:1 skew toward frequency assigning
+    # MORE share than VDI (19 of 31 tables) -- the pre-revision set showed that as
+    # 3:2. Keeps every table Sec 4.4 names by name.
+    #
+    # customer_demographics stands in for income_band, which the clustering picked
+    # first: the two carry the same trend (VDI/freq 0.584 vs 0.585, Full/Equal 1.445
+    # vs 1.426) but customer_demographics holds 2.7x the value, which halves the
+    # figure's dynamic range from 15.4x to 7.5x. It also fills a gap in Fig 4 --
+    # RowGroup/Table 0.97, value spread evenly across its 16 row groups, where the
+    # rest of the set is either ~0 or > 1.8. The cost is that cluster 0
+    # {income_band, call_center} goes unrepresented; every member of it is too
+    # low-value to plot, which is itself the point and belongs in the cover letter.
+    subset_tables = display_tables()
 
     # CONSTS 
     X = 14.4
@@ -81,8 +140,7 @@ def plot_divide(full, equal, card, boris_vals, distro, gran, normalized=True):
     font = {'size': 24}
     plt.rc('font', **font)
 
-    labels = [t.capitalize() for t in subset_tables]
-    labels[1] = "Customer"
+    labels = [label_for(t) for t in subset_tables]
     data1 = [full[t] for t in subset_tables]
     data2 = [equal[t] for t in subset_tables] 
     data3 = [card[t] for t in subset_tables]
@@ -106,8 +164,7 @@ def plot_divide(full, equal, card, boris_vals, distro, gran, normalized=True):
 
 
     for i in range(len(labels)):
-        l = labels[i]
-        y = boris_vals[l.lower()]
+        y = boris_vals[subset_tables[i]]
         left = positions[i] - 1.5 * width
         right = positions[i] + 1.5 * width
         ax.hlines(
@@ -123,10 +180,28 @@ def plot_divide(full, equal, card, boris_vals, distro, gran, normalized=True):
                           color=red,
                           linewidth=2.5,
                           label="Frequency Value")
-    ax.set_xticks(positions, labels)#, rotation=R, ha='right')
+    ax.set_xticks(positions, labels, **({"rotation": args.xrot, "ha": "right", "rotation_mode": "anchor"} if args.xrot else {}))
     ax.set_xlabel("Table Name")
-    ax.set_ylabel("% of Total Value" if normalized else "Total Value")
-    ax.set_ylim([-0.05, 1.0] if normalized else None)
+    ax.set_ylabel("Fraction of Total Value" if normalized else "Total Value")
+    # 0.70 is the knee of the clipping trade-off: over the 2100 plotted points it
+    # hides exactly one (store_sales/Cardinality at 0.961) and cuts no box, median
+    # or whisker, while giving the smaller tables 1.43x more vertical room. Below
+    # ~0.60 the Cardinality upper whiskers (store_sales 0.694, lineitem 0.476)
+    # start being cut, and that long upper tail is the defining feature of the
+    # strategy. The one point above the limit is marked at the axis edge rather
+    # than dropped silently.
+    TOP = args.ylim
+    ax.set_ylim([-0.05, TOP] if normalized else None)
+    if normalized:
+        for data, off in [(data1, -width), (data2, 0), (data3, width)]:
+            for i in range(len(subset_tables)):
+                above = [v for v in data[i] if v > TOP]
+                if not above:
+                    continue
+                ax.plot([positions[i] + off], [TOP], marker="^", color="black",
+                        markersize=9, clip_on=False, zorder=6)
+                ax.annotate(f"{max(above):.2f}", xy=(positions[i] + off, TOP),
+                            xytext=(5, -22), textcoords="offset points", fontsize=16)
 
     legend_handles = [
         Patch(facecolor=full_color, label="Full"),
@@ -135,22 +210,32 @@ def plot_divide(full, equal, card, boris_vals, distro, gran, normalized=True):
         boris_handle
     ]
 
-    ax.legend(handles=legend_handles, loc="upper right")
+    if args.legend_top:
+        ax.legend(handles=legend_handles, loc="lower center", bbox_to_anchor=(0.5, 1.0),
+                  ncol=len(legend_handles), frameon=False, handlelength=1.2, columnspacing=1.0)
+    else:
+        ax.legend(handles=legend_handles, loc="upper right")
     plt.tight_layout()
     normstr = "normalized" if normalized else "absolute"
-    plt.savefig(f"../figs/{distro}_{gran}_divide_compare_{normstr}.pdf")
+    plt.savefig(f"{args.fig_dir}/{distro}_{gran}_divide_compare_{normstr}.pdf")
 
 
 def graph_divide_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, distro, normalized=True):
-    boris_table_values, _, _ = collect_boris_data(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls)
+    # Forward `normalized`: without it collect_boris_data defaults to False and the
+    # red line is the RAW access fraction (summing to ~4.17 across tables, the mean
+    # tables-per-query) drawn over boxes that are shares summing to 1. Fig 4 already
+    # passed it, so the two figures plotted the same baseline on scales 4.17x apart.
+    boris_table_values, _, _ = collect_boris_data(tables, tpch_cols_in_tbls,
+                                                  tpcds_cols_in_tbls,
+                                                  normalized=normalized)
 
-    full_table_vals = json.load(open(f"../data/data_val_tbls_{distro}_full.json"))
-    equal_table_vals = json.load(open(f"../data/data_val_tbls_{distro}_equal.json"))
-    card_table_vals = json.load(open(f"../data/data_val_tbls_{distro}_cardinality.json"))
+    full_table_vals = json.load(open(f"{args.data_dir}/data_val_tbls_{distro}_full.json"))
+    equal_table_vals = json.load(open(f"{args.data_dir}/data_val_tbls_{distro}_equal.json"))
+    card_table_vals = json.load(open(f"{args.data_dir}/data_val_tbls_{distro}_cardinality.json"))
 
-    full_cols_vals = json.load(open(f"../data/data_val_cols_{distro}_full.json"))
-    equal_cols_vals = json.load(open(f"../data/data_val_cols_{distro}_equal.json"))
-    card_cols_vals = json.load(open(f"../data/data_val_cols_{distro}_cardinality.json"))
+    full_cols_vals = json.load(open(f"{args.data_dir}/data_val_cols_{distro}_full.json"))
+    equal_cols_vals = json.load(open(f"{args.data_dir}/data_val_cols_{distro}_equal.json"))
+    card_cols_vals = json.load(open(f"{args.data_dir}/data_val_cols_{distro}_cardinality.json"))
 
     column_names = full_cols_vals["0"].keys()
     full_table_final = {tbl: [] for tbl in tables}
@@ -223,10 +308,10 @@ def graph_granularity_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, distro
                                                     tpcds_cols_in_tbls,
                                                     normalized=normalized) 
 
-    task_values = json.load(open(f"../data/total_vals_{distro}.json"))
-    data_table_values = json.load(open(f"../data/data_val_tbls_{distro}_equal.json"))
-    data_column_values = json.load(open(f"../data/data_val_cols_{distro}_equal.json"))
-    data_rg_values = json.load(open(f"../data/data_val_rgs_tbls_{distro}_equal.json"))
+    task_values = json.load(open(f"{args.data_dir}/total_vals_{distro}.json"))
+    data_table_values = json.load(open(f"{args.data_dir}/data_val_tbls_{distro}_equal.json"))
+    data_column_values = json.load(open(f"{args.data_dir}/data_val_cols_{distro}_equal.json"))
+    data_rg_values = json.load(open(f"{args.data_dir}/data_val_rgs_tbls_{distro}_equal.json"))
 
     data_table_values_final = {tbl: [] for tbl in tables}
     data_column_table_final = {tbl: [] for tbl in tables}
@@ -285,9 +370,11 @@ def graph_granularity_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, distro
     green = "#ADDC5A"
     blue = "#1F63A9"
 
-    subset_tables = ["date_dim", "tpcds.customer","store", "store_sales", "web_sales", "lineitem",
-         "orders"]#, "part"]
+    # Pre-revision set, kept for history. See the note in plot_divide().
+    # subset_tables = ["date_dim", "tpcds.customer","store", "store_sales", "web_sales", "lineitem",
+    #      "orders"]#, "part"]
     # subset_tables = tables
+    subset_tables = display_tables()
 
     # CONSTS 
     font = {'size': 24}
@@ -296,8 +383,7 @@ def graph_granularity_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, distro
     Y = 7
     R = 45
 
-    labels = [t.capitalize() for t in subset_tables]
-    labels[1] = "Customer"
+    labels = [label_for(t) for t in subset_tables]
     data1 = [data_table_values_final[t] for t in subset_tables]
     data2 = [data_column_table_final[t] for t in subset_tables] 
     data3 = [data_rg_values_final[t] for t in subset_tables]
@@ -321,21 +407,36 @@ def graph_granularity_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, distro
 
 
     for i in range(len(labels)):
-        l = labels[i]
-        ax.scatter(positions[i] - width, boris_table_values_aggregates[l.lower()],
+        l = subset_tables[i]
+        ax.scatter(positions[i] - width, boris_table_values_aggregates[l],
                    color=red, alpha=1.0, edgecolor='k', zorder=5, label="Foo")
-        ax.scatter(positions[i], boris_column_table_aggregates[l.lower()],
+        ax.scatter(positions[i], boris_column_table_aggregates[l],
                    color=red, alpha=1.0, edgecolor='k', zorder=5)
-        ax.scatter(positions[i]+width, boris_rg_values_aggregates[l.lower()],
+        ax.scatter(positions[i]+width, boris_rg_values_aggregates[l],
                    color=red, alpha=1.0, edgecolor='k', zorder=5)
 
 
-    ax.set_xlim(-1.1, 16.1)
-    ax.set_ylim(-0.05, 1.006 if normalized else 26904.52984889749)
+    # 16.1 for the seven-table set, as before; follows the number of tables otherwise
+    ax.set_xlim(-1.1, positions[-1] + 1.1)
+    # Matched to plot_divide's limit so the two figures share a scale -- they sit
+    # adjacent in Sec 4.4 under the same y-label. Costs one point here too
+    # (store_sales/RowGroup at 0.958) and no box, median or whisker.
+    TOP = args.ylim
+    ax.set_ylim(-0.05, TOP if normalized else 26904.52984889749)
+    if normalized:
+        for data, off in [(data1, -width), (data2, 0), (data3, width)]:
+            for i in range(len(subset_tables)):
+                above = [v for v in data[i] if v > TOP]
+                if not above:
+                    continue
+                ax.plot([positions[i] + off], [TOP], marker="^", color="black",
+                        markersize=9, clip_on=False, zorder=6)
+                ax.annotate(f"{max(above):.2f}", xy=(positions[i] + off, TOP),
+                            xytext=(5, -22), textcoords="offset points", fontsize=16)
 
-    ax.set_xticks(positions, labels)#, rotation=R, ha='right')
+    ax.set_xticks(positions, labels, **({"rotation": args.xrot, "ha": "right", "rotation_mode": "anchor"} if args.xrot else {}))
     ax.set_xlabel("Table Name")
-    ax.set_ylabel("% of Total Value" if normalized else "Total Value")
+    ax.set_ylabel("Fraction of Total Value" if normalized else "Total Value")
 
     boris_handle = Line2D([0], [0], marker='o', color=red, 
                           label="Frequency Value", markeredgecolor='k')
@@ -345,23 +446,49 @@ def graph_granularity_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, distro
         Patch(facecolor=green, label="Row Group"),
         boris_handle
     ]
-    ax.legend(handles=legend_handles, loc="upper right")
+    if args.legend_top:
+        ax.legend(handles=legend_handles, loc="lower center", bbox_to_anchor=(0.5, 1.0),
+                  ncol=len(legend_handles), frameon=False, handlelength=1.2, columnspacing=1.0)
+    else:
+        ax.legend(handles=legend_handles, loc="upper right")
     plt.tight_layout()
     normstr = "normalized" if normalized else "absolute"
     # lims = ax.get_xlim()
     # print(lims)
     # lims = ax.get_ylim()
     # print(lims)
-    plt.savefig(f"../figs/{distro}_granularity_compare_{normstr}.pdf")
+    plt.savefig(f"{args.fig_dir}/{distro}_granularity_compare_{normstr}.pdf")
 
 
 if __name__ == "__main__":
     parser = ArgumentParser(description="Run time-series oracle")
-    parser.add_argument("--distro", choices=["normal", "zipf"], default="zipf",
+    parser.add_argument("--distro", choices=["normal", "zipf", "both"], default="both",
                         help="Distribution choice")
     parser.add_argument("--num-trials", type=int, default=100, 
                         help="Number of different value generation trials that were run")
+    parser.add_argument("--data-dir", default="../data",
+                        help="Directory holding the result files to plot. Point this at "
+                             "a sweep point (../data/sweep/N<n>_s<seed>) to regenerate the "
+                             "figures for that history size. Static schema inputs are "
+                             "always read from ../data.")
+    parser.add_argument("--fig-dir", default="../figs",
+                        help="Directory to write figures into. Give each sweep point its "
+                             "own so they do not overwrite each other.")
+    parser.add_argument("--tpcds-only", action="store_true",
+                        help="Results come from a TPC-DS-only run (R2D7 Spark capture)")
+    parser.add_argument("--ylim", type=float, default=0.70,
+                        help="Upper y-limit of the normalized figures. 0.70 was chosen on "
+                             "the Drill data (hides one point). On the R2D7 Spark data it "
+                             "hides 18 and cuts the store_sales whisker; use 1.0 there.")
+    parser.add_argument("--legend-top", action="store_true",
+                        help="One-row legend above the axes instead of inside (keeps fliers visible)")
+    parser.add_argument("--xrot", type=float, default=0,
+                        help="Rotate table-name tick labels by this many degrees (0 = none)")
+    parser.add_argument("--tables", default=None,
+                        help="Comma-separated tables to draw, overriding the default set")
     args = parser.parse_args()
+
+    os.makedirs(args.fig_dir, exist_ok=True)
 
     # TPCH/TPCDS tables and columns
     tpcds_tables = ["call_center", "catalog_page", "catalog_returns",
@@ -373,15 +500,15 @@ if __name__ == "__main__":
 
     tpch_tables = [x.strip() for x in open("../data/table_names.csv").readlines()]
     assert len(set(tpcds_tables) & set(tpch_tables)) == 0
-    tables = tpcds_tables + tpch_tables
+    tables = tpcds_tables if args.tpcds_only else tpcds_tables + tpch_tables
     tpch_cols_in_tbls = json.load(open("../data/tpch_columns_in_tables.json"))
     tpcds_cols_in_tbls = json.load(open("../../tpcds_schema/tpcds_columns_in_tables.json"))
 
-    graph_divide_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, "normal", normalized=True)
-    graph_divide_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, "zipf", normalized=True)
-
-    graph_granularity_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls,
-                           "normal", normalized=False)
-    graph_granularity_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, "zipf",
-                      normalized=True)
+    distros = ["normal", "zipf"] if args.distro == "both" else [args.distro]
+    for distro in distros:
+        graph_divide_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, distro,
+                          normalized=True)
+        # normal has historically been plotted on an absolute scale, zipf normalized
+        graph_granularity_comp(tables, tpch_cols_in_tbls, tpcds_cols_in_tbls, distro,
+                               normalized=(distro == "zipf"))
 

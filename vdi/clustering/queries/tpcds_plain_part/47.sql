@@ -8,10 +8,7 @@ WITH v1 AS (
       d_moy,
       SUM(ss_sales_price) AS sum_sales,
       AVG(SUM(ss_sales_price)) OVER (PARTITION BY i_category, i_brand, s_store_name, s_company_name, d_year) AS avg_monthly_sales,
-      RANK() OVER (
-        PARTITION BY i_category, i_brand, s_store_name, s_company_name
-        ORDER BY d_year, d_moy
-      ) AS rn
+      RANK() OVER (PARTITION BY i_category, i_brand, s_store_name, s_company_name ORDER BY d_year, d_moy) AS rn
     FROM READ_PARQUET('/home/cc/tpcds_cluster_base/item/*.parquet') AS item, READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS store_sales, READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS date_dim, READ_PARQUET('/home/cc/tpcds_cluster_base/store/*.parquet') AS store
     WHERE
       ss_item_sk = i_item_sk

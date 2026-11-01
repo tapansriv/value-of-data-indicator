@@ -116,7 +116,7 @@ FROM (
                 CAST(SUM(COALESCE(sr.sr_return_amt, 0)) AS DECIMAL(15, 4)) / CAST(SUM(COALESCE(sts.ss_net_paid, 0)) AS DECIMAL(15, 4))
               ) AS currency_ratio
             FROM READ_PARQUET('/home/cc/tpcds_cluster_base/store_sales/*.parquet') AS sts
-            LEFT OUTER JOIN READ_PARQUET('/home/cc/tpcds_cluster_rand/store_returns/*.parquet') AS sr
+            LEFT OUTER JOIN READ_PARQUET('/home/cc/tpcds_cluster_base/store_returns/*.parquet') AS sr
               ON (
                 sts.ss_ticket_number = sr.sr_ticket_number AND sts.ss_item_sk = sr.sr_item_sk
               ), READ_PARQUET('/home/cc/tpcds_cluster_base/date_dim/*.parquet') AS date_dim
